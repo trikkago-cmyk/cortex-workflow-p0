@@ -1,101 +1,52 @@
 # Cortex Workflow P0
 
-独立于原桌游应用的多 agent / Notion 工作流原型。
+Cortex Workflow P0 is a local-first runtime for asynchronous human-agent collaboration.
 
-这份原型只做一件事：
+It turns docs, comments, decisions, agent handoffs, receipts, and durable memory into one auditable workflow loop. The current P0 focuses on a narrow but practical goal: make multi-agent work continue without needing a custom frontend.
 
-- 先把 P0 的机器闭环跑通。
+## What It Does
 
-当前覆盖：
+- Routes work into a SQLite-backed execution kernel: `projects`, `commands`, `decisions`, `runs`, `checkpoints`, `outbox`, and `receipts`.
+- Uses Notion as the async collaboration surface through Notion Custom Agents, page comments, review pages, and project memory pages.
+- Escalates red decisions to local macOS notifications, while yellow and green work stays in documents for async review.
+- Lets external agents register, claim work, execute, report progress, and complete tasks through HTTP APIs or handoff receipts.
+- Extracts candidate memory from stable collaboration signals, then keeps durable memory governed by source, evidence, confidence, and freshness.
 
-- 方向对齐阶段的 `Why / Context / What` task brief 入库与查询
-- 长程任务 `runs / checkpoints` 入库与查询
-- 当前兼容的本地共享 memory 基线：`docs/collaboration-memory.md`
-- Memory Compiler v2 架构说明：`docs/cortex-vnext-memory-compiler-architecture.md`
-- Memory Extraction 规划：`docs/cortex-vnext-memory-extraction-plan.md`
-- 项目级 Notion review panel snapshot / markdown 渲染
-- 项目级默认通知路由配置：`notification_channel / notification_target`
-- 项目级 Notion review 配置：`notion_review_page_id / notion_parent_page_id`
-- 项目级 Notion memory 配置：`notion_memory_page_id`
-- 项目级 Notion comment scan 配置：`notion_scan_page_id`
-- Notion Custom Agents 主路径说明：`docs/notion-custom-agents-collaboration.md`
-- Notion 评论回流入队：`/webhook/notion-comment`
-- Notion Custom Agent 事件入口：`/webhook/notion-custom-agent`
-- Notion Custom Agent 上下文接口：`/notion/custom-agent/context`
-- Codex 可直接写入出站消息：`/webhook/codex-message`
-- 企业 IM 指令入队
-- 企业 IM 对决策的 `approve / improve / retry / stop` 会同步回写 decision 状态
-- 本地 macOS 红灯提醒支持 `立即查看`，可直接跳转到对应 Codex 对话线程
-- agent 可按筛选条件轮询并 `claim-next`
-- 常驻 `executor worker` 可自动 claim / execute / reply / complete
-- `executor worker` 支持按 `agent_name` 路由到不同 webhook handler
-- `agent-router` 可把未分配评论二次派单成子 command，并交给 `agent-pm / agent-architect / agent-notion-worker`
-- `agent-evaluator` 已接入，负责质量 / 评测 / 异常类评论路由
-- 真实 `executor-multi-agent-handler` 已接入，支持 router / pm / architect / evaluator / notion-worker 五类 handler
-- 仓内 `panghu-poller` 现在会在发送 handoff 后自动 POST delivery receipt 到 `payload.callback_url`
-- multi-agent handler 执行时会自动写 run / checkpoint，review 面板优先展示 checkpoint
-- `notion-loop` 仅作为 legacy fallback，可自动做：review sync、memory sync、execution doc sync、项目索引 sync、评论扫描入队
-- agent 可直接回复 Notion discussion，并同步收口 command
-- Notion 评论支持 `owner_agent` 路由；既不依赖 `@mention`，也兼容 `@mention`
-- 评论路由支持四层优先级：评论前缀 > `@mention` 别名 > block/page 路由规则 > 默认 router
-- review / execution / project index 的同步默认保留历史，但展示顺序改为倒序：最新在上，旧记录下沉
-- review / execution 页面会保留顶部导航区，先看目录，再看最新进展
-- review / execution 文档默认采用周会式结构：`当前任务`、`🟢 核心进展`、`风险举手`、`重点 To Do`
-- 支持人工收口旧 decision / command，避免 review 面板残留历史脏状态
-- `source + idempotency_key` 去重
-- command claim / executing / done / ack
-- SQLite 持久化，server 重启不丢状态
-- HTTP 路由：`/task-briefs`、`/webhook/*`、`/decisions`、`/outbox`、`/commands`
-- 执行契约门禁检查
-- Notion 评论按“评论 / 回复事件”粒度入队
-- 红灯决策告警载荷生成
-- `signal_level` 与旧版 `blocking_level` 的兼容归一化
+## P0 Workflow
 
-## 目录
+```mermaid
+flowchart LR
+  A["Task enters Cortex"] --> B["Agent executes"]
+  B --> C{"Decision level"}
+  C -->|Green| D["Continue automatically"]
+  C -->|Yellow| E["Write to review docs"]
+  C -->|Red| F["Push local notification"]
+  E --> G["Human comments asynchronously"]
+  F --> H["Human approves or redirects"]
+  G --> I["Cortex creates next command"]
+  H --> I
+  I --> J["Checkpoint and receipt"]
+  J --> K["Memory candidate extraction"]
+```
 
-- `PROTOCOL.md`
-- `src/store.js`
-- `src/engine.js`
-- `src/server.js`
-- `src/panghu-poller.js`
-- `src/notion-review-sync.js`
-- `src/notion-project-index-sync.js`
-- `src/outbox.js`
-- `src/adapter.js`
-- `src/workflow-engine.js`
-- `test/workflow-engine.test.js`
-- `test/server.test.js`
-- `test/panghu-poller.test.js`
-- `test/review-panel.test.js`
-- `test/notion-review-sync.test.js`
-- `scripts/dev-stack.js`
-- `scripts/im-send.js`
-- `scripts/im-action.js`
-- `scripts/red-decision.js`
-- `scripts/local-e2e.js`
-- `scripts/roundtrip-e2e.js`
-- `scripts/render-review.js`
-- `scripts/notion-create-review-page.js`
-- `scripts/notion-sync-review.js`
-- `scripts/notion-bootstrap.js`
-- `scripts/codex-message.js`
-- `scripts/claim-next.js`
-- `scripts/command-status.js`
-- `scripts/decision-status.js`
-- `scripts/project-upsert.js`
-- `scripts/memory-sync.js`
-- `scripts/notion-loop.js`
-- `scripts/notion-reply.js`
-- `scripts/notion-comment-smoke.js`
-- `scripts/notion-sync-execution-doc.js`
-- `scripts/notion-sync-project-index.js`
-- `src/comment-routing.js`
-- `src/executor-worker.js`
-- `src/executor-routing.js`
-- `src/executor-multi-agent-handler.js`
-- `src/executor-webhook-stub.js`
-- `docs/notion-routing.json`
-- `docs/executor-routing.json`
+## Current Status
+
+This repository is a P0 alpha. The backend runtime, SQLite truth source, multi-agent routing, local red-decision notifications, memory candidate flow, and Notion Custom Agent API surface are implemented and covered by tests.
+
+Still being finalized:
+
+- Real workspace setup for Notion Custom Agent triggers and tool connections.
+- Longer-running `launchd + local_notification` stability validation.
+- A repeatable onboarding SOP for connecting additional external agents.
+
+## Key Docs
+
+- [Protocol](./PROTOCOL.md)
+- [Notion Custom Agents Collaboration](./docs/notion-custom-agents-collaboration.md)
+- [MVP Readiness](./docs/prj-cortex-mvp-readiness.md)
+- [External Agent Onboarding](./docs/external-agent-onboarding.md)
+- [Memory Extraction Plan](./docs/cortex-vnext-memory-extraction-plan.md)
+- [Memory Compiler Architecture](./docs/cortex-vnext-memory-compiler-architecture.md)
 
 ## 运行
 
