@@ -1,0 +1,25 @@
+{
+  "default": {
+    "url": "http://127.0.0.1:3010/handle/default"
+  },
+  "agents": {
+    "agent-notion-worker": {
+      "url": "http://127.0.0.1:3010/handle/agent-notion-worker"
+    },
+    "agent-router": {
+      "url": "http://127.0.0.1:3010/handle/agent-router"
+    },
+    "agent-pm": {
+      "url": "http://127.0.0.1:3010/handle/agent-pm"
+    },
+    "agent-architect": {
+      "url": "http://127.0.0.1:3010/handle/agent-architect"
+    },
+    "agent-dark-luxury-itinerary": {
+      "url": "http://127.0.0.1:3010/handle/agent-dark-luxury-itinerary"
+    },
+    "agent-panghu": {
+      "url": "http://127.0.0.1:19100/webhook/codex-message"
+    }
+  }
+}

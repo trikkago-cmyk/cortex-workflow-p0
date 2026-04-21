@@ -1,0 +1,18 @@
+.DS_Store
+node_modules/
+
+# Local runtime and secrets
+.env
+.env.*
+!.env.example
+db/
+tmp/
+.learnings/
+
+# Logs and local process artifacts
+*.log
+*.pid
+*.sock
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

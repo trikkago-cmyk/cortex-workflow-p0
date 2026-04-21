@@ -1,0 +1,26 @@
+{
+  "aliases": {
+    "codex": "agent-router",
+    "cortex": "agent-router",
+    "notion": "agent-notion-worker",
+    "router": "agent-router",
+    "pm": "agent-pm",
+    "architect": "agent-architect",
+    "evaluator": "agent-evaluator",
+    "darkluxury": "agent-dark-luxury-itinerary",
+    "itinerary": "agent-dark-luxury-itinerary",
+    "routeguide": "agent-dark-luxury-itinerary",
+    "路书": "agent-dark-luxury-itinerary",
+    "panghu": "agent-panghu",
+    "胖虎": "agent-panghu"
+  },
+  "pages": {
+    "3440483f-51e8-81b9-917d-cbe74d558e4f": "agent-dark-luxury-itinerary",
+    "3440483f-51e8-8157-813e-d658490b2942": "agent-dark-luxury-itinerary",
+    "3440483f-51e8-8134-be83-c3af335a0051": "agent-dark-luxury-itinerary"
+  },
+  "blocks": {},
+  "defaults": {
+    "notion_comment": "agent-router"
+  }
+}

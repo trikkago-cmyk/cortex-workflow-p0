@@ -1,0 +1,29 @@
+{
+  "defaults": {
+    "project_id": "PRJ-cortex",
+    "source": "notion_comment",
+    "mode": "webhook",
+    "poll_interval_ms": 1000,
+    "routing_file": "./docs/executor-routing.json",
+    "include_unassigned": false
+  },
+  "workers": [
+    {
+      "agent_name": "agent-router",
+      "owner_agent": null,
+      "only_unassigned": true
+    },
+    {
+      "agent_name": "agent-notion-worker",
+      "owner_agent": "agent-notion-worker"
+    },
+    {
+      "agent_name": "agent-pm",
+      "owner_agent": "agent-pm"
+    },
+    {
+      "agent_name": "agent-architect",
+      "owner_agent": "agent-architect"
+    }
+  ]
+}

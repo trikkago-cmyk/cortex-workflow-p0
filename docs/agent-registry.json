@@ -1,0 +1,62 @@
+{
+  "defaults": {
+    "project_id": "PRJ-cortex",
+    "source": "notion_comment",
+    "mode": "webhook",
+    "poll_interval_ms": 1000,
+    "include_unassigned": false
+  },
+  "agents": [
+    {
+      "agent_name": "agent-router",
+      "handler_kind": "router",
+      "owner_agent": "agent-router",
+      "include_unassigned": true,
+      "only_unassigned": false
+    },
+    {
+      "agent_name": "agent-notion-worker",
+      "handler_kind": "shared_actions",
+      "owner_agent": "agent-notion-worker"
+    },
+    {
+      "agent_name": "agent-pm",
+      "handler_kind": "pm",
+      "owner_agent": "agent-pm"
+    },
+    {
+      "agent_name": "agent-architect",
+      "handler_kind": "architect",
+      "owner_agent": "agent-architect"
+    },
+    {
+      "agent_name": "agent-evaluator",
+      "handler_kind": "evaluator",
+      "owner_agent": "agent-evaluator"
+    },
+    {
+      "agent_name": "agent-dark-luxury-itinerary",
+      "handler_kind": "codex_resume",
+      "project_id": "PRJ-dark-luxury-itinerary",
+      "owner_agent": "agent-dark-luxury-itinerary",
+      "webhook_url": "http://127.0.0.1:3010/handle/agent-dark-luxury-itinerary",
+      "extra_env": {
+        "CODEX_SESSION_ID": "019d4ce1-a379-7c72-8edd-9c62e566014a",
+        "CODEX_THREAD_NAME": "Dark Luxury Travel Itinerary"
+      }
+    },
+    {
+      "agent_name": "agent-panghu",
+      "enabled": false,
+      "handler_kind": "external_webhook",
+      "project_id": "PRJ-cortex",
+      "source": "notion_comment",
+      "owner_agent": "agent-panghu",
+      "mode": "webhook",
+      "poll_interval_ms": 1000,
+      "include_unassigned": false,
+      "only_unassigned": false,
+      "webhook_url": "http://127.0.0.1:19100/webhook/codex-message"
+    }
+  ]
+}

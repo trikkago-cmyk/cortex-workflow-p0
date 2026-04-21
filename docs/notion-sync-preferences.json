@@ -1,0 +1,13 @@
+{
+  "reviewPage": {
+    "showSummaryNav": true,
+    "onlyReportNewCheckpoint": true
+  },
+  "executionPage": {
+    "showSummaryNav": true,
+    "onlyReportNewCheckpoint": true
+  },
+  "commentActions": {
+    "suppressFeedbackOnlySync": true
+  }
+}
