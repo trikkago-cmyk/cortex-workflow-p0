@@ -140,6 +140,54 @@ flowchart LR
 - Router 能把事件写入 `POST /webhook/notion-custom-agent`。
 - Cortex 侧生成 command，并保留 `page_id / discussion_id / comment_id / owner_agent`。
 
+### Phase 1 Notion 侧配置清单
+
+在 Notion 里，P0 先只落一个 `Cortex Router`：
+
+1. 创建一个 `Notion Custom Agent`，名称固定为 `Cortex Router`。
+2. 打开两个触发器：
+   - `The agent is mentioned in a page or comment`
+   - `A comment is added to a page`
+3. 给它的系统职责写清 4 件事：
+   - 先读当前 page / discussion / comment 上下文
+   - 调 `GET /notion/custom-agent/context?project_id=PRJ-cortex` 拉 Cortex 当前项目态
+   - 判断 `green / yellow / red`
+   - 再调 `POST /webhook/notion-custom-agent` 把事件写回 Cortex
+4. 允许它访问的 Cortex API 先限制在最小闭环：
+   - `GET /notion/custom-agent/context`
+   - `POST /webhook/notion-custom-agent`
+   - `POST /commands/claim-next`
+   - `POST /webhook/agent-receipt`
+5. Router 的 system prompt 不要写成开放式大总管，而要写成一个明确的事件路由器：
+   - 先归类事件，再决定是否继续执行、回帖等待、或升级为红灯决策
+   - 不把 Notion 当真相源
+   - 所有 durable 状态都回 Cortex
+6. 当前阶段不配置第二个 Custom Agent。
+   - 其他 agent 仍然是 Cortex 内部的 `owner_agent`
+   - Notion 里先只暴露 `Cortex Router` 这一个入口
+
+### Phase 1 Router Prompt 骨架
+
+可以直接按这个结构去配置 Notion 侧说明：
+
+```text
+You are Cortex Router, the single async entrypoint for Cortex collaboration in Notion.
+
+Your job:
+1. Read the current page/comment context.
+2. Fetch Cortex project context from GET /notion/custom-agent/context?project_id=PRJ-cortex.
+3. Classify the incoming event as green, yellow, or red.
+4. POST the event to /webhook/notion-custom-agent with page_id, discussion_id, comment_id, body, invoked_agent, owner_agent, source_url, and optional route_to.
+5. For green and yellow items, continue collaboration in Notion comments.
+6. For red items, stop execution and let Cortex trigger the local human notification flow.
+
+Rules:
+- Cortex local Markdown + SQLite is the source of truth.
+- Notion is the async collaboration surface.
+- Do not silently skip red-risk decisions.
+- Prefer explicit owner_agent routing when the human instruction already implies a role.
+```
+
 ### Phase 2：任务委派生命周期
 
 目标：把 OpenAgents 的 task lifecycle 映射到 Cortex 内核。
@@ -211,12 +259,74 @@ flowchart LR
 }
 ```
 
+推荐补充字段：
+
+```json
+{
+  "target_type": "page_comment",
+  "target_id": "notion-block-or-page-id",
+  "context_quote": "the paragraph or task sentence around the comment",
+  "anchor_block_id": "optional notion block id",
+  "route_to": "agent-pm"
+}
+```
+
 路由建议：
 
 - 默认先写 `owner_agent=agent-router`。
 - 如果评论里有明确的 `[agent: agent-pm]` 或 `route_to=agent-pm`，Router 可以把 `owner_agent` 改成目标 agent。
 - 如果是红灯决策，Router 不直接继续执行，而是创建 decision request。
 - 如果是 memory candidate，Router 先进入 reviewer-agent 建议，再等待 human reviewer 裁定。
+
+## Phase 1 联调 Checklist
+
+联调顺序不要一上来就跑全链路，先按这 6 步验：
+
+1. Context 可读
+   - 用浏览器或 API 工具请求 `GET /notion/custom-agent/context?project_id=PRJ-cortex`
+   - 确认返回里有 `collaboration_mode=custom_agent`
+   - 确认返回里带 `async_contract.ingress_webhook=/webhook/notion-custom-agent`
+2. Router 可写入
+   - 用固定 payload 手动调用一次 `POST /webhook/notion-custom-agent`
+   - 确认返回 `ok=true`
+   - 确认拿到 `commandId` 和 `owner_agent`
+3. Green case
+   - 在 Notion 评论一个明确执行型动作，例如“整理当前 P0 阻塞并继续推进”
+   - 预期：落 command，owner_agent 为 router 或明确指定 agent，后续进入执行
+4. Yellow case
+   - 在 Notion 评论一个需要澄清但不阻塞的问题
+   - 预期：Router 回帖说明待确认点，并把状态写到 review 文档，不触发本地通知
+5. Red case
+   - 在 Notion 评论一个高风险决策，例如“直接覆盖现有对外文档结构”
+   - 预期：Cortex 创建 decision request，并走本地系统通知
+6. Receipt 回流
+   - 模拟 executor 完成后回调 `POST /webhook/agent-receipt`
+   - 预期：command 状态关闭，Notion discussion 可收到结果摘要
+
+## Workspace 迁移与权限排障
+
+如果切了新 Notion workspace，不要直接假设“授权完成就能用”，先跑一次诊断：
+
+```bash
+npm run notion:diagnose -- "https://www.notion.so/your-root-page-id"
+```
+
+看 3 个结果：
+
+1. `notion_api.accessible`
+   - `true` 说明本地 `NOTION_API_KEY` 至少是有效的
+2. `targets[].accessible`
+   - `false` 说明目标页没有共享给当前 integration
+   - 错误体里的 `integration_id` 就是需要在 Notion 里核对的那个集成
+3. `cortex.project`
+   - 这里能直接看到当前项目还指向哪些旧的 `root/review/memory/scan` 页面
+
+P0 的迁移顺序应当是：
+
+1. 先让新 root page 对 token-based integration 可见
+2. 再确认 Notion MCP OAuth 也能 fetch 到新页面
+3. 再跑 `notion:bootstrap`
+4. 最后跑 `notion:sync-all`
 
 ## 兼容说明
 

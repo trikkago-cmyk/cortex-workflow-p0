@@ -25,6 +25,7 @@
     "notion:compact-pages": "node scripts/notion-compact-pages.js",
     "notion:rotate-compact-pages": "node scripts/notion-rotate-compact-pages.js",
     "notion:bootstrap": "node scripts/notion-bootstrap.js",
+    "notion:diagnose": "node scripts/notion-diagnose.js",
     "notion:cleanup-obsolete": "node scripts/notion-cleanup-obsolete.js",
     "memory:compile": "node scripts/memory-compile.js",
     "memory:notion-sync": "node scripts/memory-sync.js",
