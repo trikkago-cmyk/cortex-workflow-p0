@@ -132,6 +132,95 @@ function addTarget(targets, seenIds, label, value, source) {
   });
 }
 
+function buildDiagnosis({ targetResults = [], whoami }) {
+  const explicitTarget = targetResults.find((target) => target.label === 'explicit_target');
+  const inaccessibleTargets = targetResults.filter((target) => !target.accessible);
+  const accessibleProjectTargets = targetResults.filter(
+    (target) => target.source === 'project_review' && target.accessible,
+  );
+  const allInaccessibleAreRateLimited =
+    inaccessibleTargets.length > 0 && inaccessibleTargets.every((target) => target.status === 429);
+  const workspaceName = whoami.ok ? whoami.payload?.bot?.workspace_name || null : null;
+  const tokenCanAccessOldProject =
+    Boolean(explicitTarget && !explicitTarget.accessible) && accessibleProjectTargets.length > 0;
+  const likelyWorkspaceMismatch = Boolean(tokenCanAccessOldProject && workspaceName);
+
+  if (targetResults.length === 0) {
+    return {
+      status: 'missing_target',
+      summary: 'No Notion target page was provided.',
+      likely_workspace_mismatch: false,
+      token_workspace_name: workspaceName,
+    };
+  }
+
+  if (inaccessibleTargets.length === 0) {
+    return {
+      status: 'ready',
+      summary: 'Token-based Notion API can access every checked page.',
+      likely_workspace_mismatch: false,
+      token_workspace_name: workspaceName,
+    };
+  }
+
+  if (allInaccessibleAreRateLimited) {
+    return {
+      status: 'rate_limited',
+      summary: 'The Notion API is temporarily rate limited, so this run cannot distinguish sharing problems from workspace mismatch. Wait a few minutes and re-run the diagnosis.',
+      likely_workspace_mismatch: false,
+      token_workspace_name: workspaceName,
+      inaccessible_labels: inaccessibleTargets.map((target) => target.label),
+    };
+  }
+
+  return {
+    status: likelyWorkspaceMismatch ? 'token_workspace_or_share_mismatch' : 'page_not_shared',
+    summary: likelyWorkspaceMismatch
+      ? 'The token can still access existing project pages, but it cannot access the explicit target page. For a new Notion workspace, create or use an internal integration in that workspace, update NOTION_API_KEY, and share the root page with that integration.'
+      : 'One or more target pages are not visible to the token-based Notion integration. Share the pages with the integration named in the Notion API error, or update NOTION_API_KEY to a token from the target workspace.',
+    likely_workspace_mismatch: likelyWorkspaceMismatch,
+    token_workspace_name: workspaceName,
+    inaccessible_labels: inaccessibleTargets.map((target) => target.label),
+  };
+}
+
+function buildNextActions({ targetResults = [], diagnosis }) {
+  if (targetResults.length === 0) {
+    return [
+      'Pass a Notion page URL or page id to diagnose a target page.',
+      'Example: npm run notion:diagnose -- "https://www.notion.so/your-page-id"',
+    ];
+  }
+
+  if (targetResults.every((target) => target.accessible)) {
+    return ['Token-based Notion API can access every checked page. You can proceed with notion:bootstrap or notion:sync-all.'];
+  }
+
+  if (diagnosis?.status === 'rate_limited') {
+    return [
+      'Wait a few minutes for the Notion API rate limit window to clear, then re-run npm run notion:diagnose with the same page URL.',
+      'Do not treat a 429 response as proof of missing permissions. Re-run once the rate limit clears before changing workspace settings.',
+      'If the next run still shows explicit_target inaccessible while MCP can fetch the page, update NOTION_API_KEY to an internal integration token from the target workspace and share the page to that integration.',
+    ];
+  }
+
+  if (diagnosis?.likely_workspace_mismatch) {
+    return [
+      'MCP OAuth and NOTION_API_KEY are separate auth paths. MCP may already see the new workspace while token-based sync still points to the old integration.',
+      'In the target Notion workspace, create or select an internal integration for Cortex/codex and copy its installation access token into .env.local as NOTION_API_KEY.',
+      'Open the target root page, use the page menu -> Add connections, and add that same integration to the page or an ancestor page.',
+      'Re-run npm run notion:diagnose with the new page URL until the explicit_target is accessible before attempting notion:bootstrap.',
+    ];
+  }
+
+  return [
+    'Share the target page and its parent workspace tree with the Notion API integration shown in the error message.',
+    'If this is a different Notion workspace, replace NOTION_API_KEY with an internal integration token created in that workspace.',
+    'If MCP still points to the old workspace, run codex mcp logout notion, log in again, select the new workspace, and restart Codex.',
+    'Re-run npm run notion:diagnose with the new page URL before attempting notion:bootstrap.',
+  ];
+}
+
 const projectId = process.env.PROJECT_ID || 'PRJ-cortex';
 const cortexBaseUrl = process.env.CORTEX_BASE_URL || 'http://127.0.0.1:19100';
 const explicitTarget = process.env.NOTION_TARGET_PAGE_URL || process.env.NOTION_TARGET_PAGE_ID || process.argv[2] || '';
@@ -163,6 +252,8 @@ for (const target of targets) {
     error: pageResponse.ok ? null : normalizeErrorPayload(pageResponse.payload, pageResponse.raw),
   });
 }
+
+const diagnosis = buildDiagnosis({ targetResults, whoami });
 
 const result = {
   ok: targetResults.every((target) => target.accessible),
@@ -201,19 +292,8 @@ const result = {
     error: whoami.ok ? null : normalizeErrorPayload(whoami.payload, whoami.raw),
   },
   targets: targetResults,
-  next_actions:
-    targetResults.length === 0
-      ? [
-          'Pass a Notion page URL or page id to diagnose a target page.',
-          'Example: npm run notion:diagnose -- "https://www.notion.so/your-page-id"',
-        ]
-      : targetResults.every((target) => target.accessible)
-        ? ['Token-based Notion API can access every checked page. You can proceed with notion:bootstrap or notion:sync-all.']
-        : [
-            'Share the target page and its parent workspace tree with the Notion API integration shown in the error message.',
-            'If MCP still points to the old workspace, run codex mcp logout notion, log in again, select the new workspace, and restart Codex.',
-            'Re-run npm run notion:diagnose with the new page URL before attempting notion:bootstrap.',
-          ],
+  diagnosis,
+  next_actions: buildNextActions({ targetResults, diagnosis }),
 };
 
 console.log(JSON.stringify(result, null, 2));

@@ -271,6 +271,16 @@ Rules:
 }
 ```
 
+Webhook 响应约定：
+
+- `workflow_path=command`
+  - 表示当前 comment 已进入普通执行链路
+  - 返回 `command_id / owner_agent`
+- `workflow_path=decision_request`
+  - 表示当前 comment 已被 Router 判成 `yellow / red`
+  - 返回 `decision_id / signal_level / decision`
+  - `red` 还会额外返回 `outbox_queued=true`
+
 路由建议：
 
 - 默认先写 `owner_agent=agent-router`。
@@ -304,6 +314,62 @@ Rules:
    - 预期：command 状态关闭，Notion discussion 可收到结果摘要
 
 ## Workspace 迁移与权限排障
+
+先明确一个最容易把人绕晕的事实：
+
+- `Notion MCP OAuth` 和本地 `.env.local` 里的 `NOTION_API_KEY` 不是同一条鉴权链路
+- 前者决定 Codex / Custom Agent / MCP 工具能不能“看见”某个 workspace
+- 后者决定 Cortex 这套本地 `notion:bootstrap`、`memory:notion-sync`、`notion:sync-all` 脚本能不能写进去
+- 所以会出现一种常见错觉：
+  - 你已经在 Codex 里重新 OAuth 到了新 workspace
+  - `mcp__notion__` 已经能 fetch 新页面
+  - 但本地同步脚本仍然 404
+  - 根因通常不是“Notion 抽风”，而是 `NOTION_API_KEY` 还在用旧 workspace 的 internal integration
+
+### 新 workspace 的正确迁移顺序
+
+1. 先修 MCP OAuth
+   - 运行 `codex mcp logout notion`
+   - 再运行 `codex mcp login notion`
+   - OAuth 时明确选择新的 Notion workspace
+   - 重启 Codex
+   - 用 `mcp__notion__.notion_fetch` 或在对话里直接 fetch 新 root page，确认 MCP 真的能看到新页面
+2. 再修 token-based sync
+   - 在新的 Notion workspace 里创建或选择一个 `internal integration`
+   - 给它一个稳定名称，例如 `codex-sync` 或 `cortex-sync`
+   - 复制新的 `Internal Integration Secret`
+   - 更新本地 `.env.local` 里的 `NOTION_API_KEY`
+3. 给新 root page 授权
+   - 打开新的 root page
+   - 用页面右上角菜单的 `Add connections`
+   - 把刚才那一个 integration 加到这张页面，或直接加到它的父页面
+   - 如果后续要在这一棵树下创建 review / memory / execution 子页面，最稳妥的是直接分享父页面
+4. 最后再跑 Cortex 脚本
+   - 先跑 `npm run notion:diagnose -- "https://www.notion.so/your-root-page-id"`
+   - 再跑 `npm run notion:bootstrap -- "https://www.notion.so/your-root-page-id"`
+   - 最后跑 `npm run notion:sync-all`
+
+### 你应该看到的健康信号
+
+- `mcp__notion__.notion_fetch` 能读到新页面
+- `npm run notion:diagnose` 里：
+  - `notion_api.accessible=true`
+  - `targets[0].accessible=true`
+  - `diagnosis.status=ready`
+- `cortex.project` 在 bootstrap 之后切换到新的 `root/review/memory/scan` 页面 id
+
+### 如果又卡住，优先怎么判别
+
+1. MCP 能看见，新脚本 404
+   - 说明 `NOTION_API_KEY` 仍旧不对，或者新页面没有分享给 token 对应的 integration
+2. 新脚本能看见，MCP 看不见
+   - 说明 OAuth 还在旧 workspace，需要重新登录 MCP
+3. 两边都看不见
+   - 先确认页面确实在目标 workspace 里
+   - 再确认不是分享了错误的页面副本或数据库视图
+4. 两边都能看见，但 bootstrap 仍失败
+   - 再检查是不是本地 `PROJECT_ID / NOTION_PARENT_PAGE_ID / ROOT_PAGE_URL` 仍指向旧页面
+   - 此时通常不是授权问题，而是项目配置还没切过去
 
 如果切了新 Notion workspace，不要直接假设“授权完成就能用”，先跑一次诊断：
 

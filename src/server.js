@@ -42,12 +42,111 @@ function summarizeInstruction(text, maxLength = 160) {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
 }
 
+function extractDecisionContext(body) {
+  if (body.decision_context && typeof body.decision_context === 'object') {
+    return body.decision_context;
+  }
+
+  if (body.decisionContext && typeof body.decisionContext === 'object') {
+    return body.decisionContext;
+  }
+
+  if (body.payload?.decision_context && typeof body.payload.decision_context === 'object') {
+    return body.payload.decision_context;
+  }
+
+  return null;
+}
+
 function normalizeSignalLevel(value, fallback = 'green') {
   const raw = compact(value).toLowerCase();
   if (raw === 'red' || raw === 'yellow' || raw === 'green') {
     return raw;
   }
   return fallback;
+}
+
+function buildNotionCustomAgentDecisionInput(body) {
+  const decisionContext = extractDecisionContext(body);
+  const explicitSignal = normalizeSignalLevel(
+    body.signal_level ||
+      body.signalLevel ||
+      body.blocking_level ||
+      body.blockingLevel ||
+      decisionContext?.signal_level ||
+      decisionContext?.signalLevel,
+    '',
+  );
+  const signalLevel = explicitSignal === 'red' || explicitSignal === 'yellow' ? explicitSignal : decisionContext ? 'yellow' : null;
+
+  if (!signalLevel) {
+    return null;
+  }
+
+  const sourceUrl =
+    compact(body.source_url || body.sourceUrl) ||
+    `notion://page/${body.page_id}/discussion/${body.discussion_id}/comment/${body.comment_id}`;
+
+  return {
+    signalLevel,
+    question:
+      compact(body.question || decisionContext?.question) ||
+      `需要处理的 ${signalLevel === 'red' ? '红灯' : '黄灯'}事项：${summarizeInstruction(body.body, 96)}`,
+    context:
+      compact(body.context || decisionContext?.context || body.context_quote || body.contextQuote) ||
+      compact(body.body) ||
+      null,
+    options: Array.isArray(body.options)
+      ? body.options
+      : Array.isArray(decisionContext?.options)
+        ? decisionContext.options
+        : [],
+    recommendation: compact(body.recommendation || decisionContext?.recommendation) || null,
+    recommendedOption: compact(body.recommended_option || body.recommendedOption || decisionContext?.recommended_option) || null,
+    whyNow:
+      compact(body.why_now || body.whyNow || decisionContext?.why_now || decisionContext?.whyNow) ||
+      `Notion Custom Agent classified the current discussion as ${signalLevel}.`,
+    impactScope: compact(body.impact_scope || body.impactScope || decisionContext?.impact_scope || decisionContext?.impactScope) || 'module',
+    irreversible: Boolean(body.irreversible ?? decisionContext?.irreversible),
+    downstreamContamination: Boolean(
+      body.downstream_contamination ?? body.downstreamContamination ?? decisionContext?.downstream_contamination,
+    ),
+    evidenceRefs: Array.isArray(body.evidence_refs)
+      ? body.evidence_refs
+      : Array.isArray(decisionContext?.evidence_refs)
+        ? decisionContext.evidence_refs
+        : [],
+    requestedHumanAction:
+      compact(
+        body.requested_human_action ||
+          body.requestedHumanAction ||
+          decisionContext?.requested_human_action ||
+          decisionContext?.requestedHumanAction,
+      ) ||
+      (signalLevel === 'red' ? '请通过红灯决策流程尽快拍板。' : '请在文档中异步确认后再继续推进。'),
+    dueAt: body.due_at || body.dueAt || decisionContext?.due_at || decisionContext?.dueAt || null,
+    ownerAgent: compact(body.owner_agent || body.ownerAgent || body.route_to || body.routeTo) || null,
+    sourceUrl,
+    idempotencyKey:
+      compact(body.idempotency_key || body.idempotencyKey) ||
+      `notion-custom-agent-decision:${body.page_id}:${body.discussion_id}:${body.comment_id}:${signalLevel}`,
+    sessionId: compact(body.session_id || body.sessionId) || null,
+    channel: compact(body.channel) || null,
+    chatId: compact(body.chat_id || body.chatId) || null,
+    threadId: compact(body.thread_id || body.threadId) || null,
+    threadUrl: compact(body.thread_url || body.threadUrl) || null,
+    actionUrl: compact(body.action_url || body.actionUrl) || null,
+    displayTags: Array.isArray(body.display_tags)
+      ? body.display_tags
+      : Array.isArray(decisionContext?.display_tags)
+        ? decisionContext.display_tags
+        : [],
+    retrievalTags: Array.isArray(body.retrieval_tags)
+      ? body.retrieval_tags
+      : Array.isArray(decisionContext?.retrieval_tags)
+        ? decisionContext.retrieval_tags
+        : [],
+  };
 }
 
 function normalizeReceiptStatus(value) {
@@ -1541,6 +1640,45 @@ export function createCortexServer(options = {}) {
         const body = await readJsonBody(req);
         requireFields(body, ['page_id', 'discussion_id', 'comment_id', 'body']);
 
+        const decisionInput = buildNotionCustomAgentDecisionInput(body);
+        if (decisionInput) {
+          const result = engine.createDecision({
+            projectId: body.project_id,
+            ...decisionInput,
+          });
+
+          projector.projectDecisionRequest(result.decision);
+
+          const response = {
+            ok: true,
+            isDuplicate: result.isDuplicate,
+            collaboration_mode: 'custom_agent',
+            collaborationMode: 'custom_agent',
+            workflow_path: 'decision_request',
+            workflowPath: 'decision_request',
+            signal_level: result.decision.signalLevel,
+            signalLevel: result.decision.signalLevel,
+            decision_id: result.decision.decisionId,
+            decisionId: result.decision.decisionId,
+            command_id: null,
+            commandId: null,
+            decision: mapDecisionForApi(result.decision),
+            invoked_agent: body.invoked_agent || null,
+            invokedAgent: body.invoked_agent || null,
+            owner_agent: result.decision.ownerAgent,
+            ownerAgent: result.decision.ownerAgent,
+            outbox_queued: result.outboxQueued,
+            outboxQueued: result.outboxQueued,
+          };
+
+          if (result._redAlert) {
+            response._redAlert = result._redAlert;
+            response._syncAlert = createSyncAlias(result._redAlert);
+          }
+
+          return sendJson(res, 200, response);
+        }
+
         const result = engine.ingestNotionComment({
           projectId: body.project_id,
           targetType: body.target_type,
@@ -1559,10 +1697,15 @@ export function createCortexServer(options = {}) {
 
         return sendJson(res, 200, {
           ok: true,
+          command_id: result.commandId,
           commandId: result.commandId,
           isDuplicate: result.isDuplicate,
           collaboration_mode: 'custom_agent',
           collaborationMode: 'custom_agent',
+          workflow_path: 'command',
+          workflowPath: 'command',
+          signal_level: 'green',
+          signalLevel: 'green',
           invoked_agent: body.invoked_agent || null,
           invokedAgent: body.invoked_agent || null,
           owner_agent: result.command.ownerAgent,

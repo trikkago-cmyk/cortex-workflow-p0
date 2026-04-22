@@ -723,6 +723,14 @@ PROJECT_ID=PRJ-cortex \
 npm run notion:bootstrap -- "https://www.notion.so/your-parent-page"
 ```
 
+如果这是一个新 Notion workspace，先跑一次：
+
+```bash
+npm run notion:diagnose -- "https://www.notion.so/your-parent-page"
+```
+
+只有当 `explicit_target.accessible=true` 时再继续 bootstrap。`Codex MCP OAuth` 能看到页面，并不代表本地 `NOTION_API_KEY` 也已经切到同一个 workspace。
+
 它会自动创建 3 个子页面：
 
 - `Review Panel`
