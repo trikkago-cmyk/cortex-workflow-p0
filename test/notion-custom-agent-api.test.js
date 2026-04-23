@@ -45,6 +45,7 @@ test('notion custom agent context exposes the event-driven async contract', asyn
   assert.equal(context.body.async_contract.ingress, 'event_driven');
   assert.equal(context.body.async_contract.ingress_webhook, '/webhook/notion-custom-agent');
   assert.equal(context.body.async_contract.loop_guard.ignore_self_comments, true);
+  assert.equal(context.body.async_contract.scope_guard.enforce_known_project_pages, false);
 });
 
 test('notion custom agent webhook ingests agent-triggered comments without polling', async (t) => {
@@ -215,4 +216,123 @@ test('notion custom agent webhook ignores self-authored agent comments to avoid 
   const decisions = await getJson(baseUrl, '/decisions?project_id=PRJ-cortex');
   assert.equal(decisions.status, 200);
   assert.equal(decisions.body.decisions.length, 0);
+});
+
+test('notion custom agent context exposes configured project scope ids', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-notion-custom-agent-scope-context-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-23T10:00:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  const upsert = await postJson(baseUrl, '/projects/upsert', {
+    project_id: 'PRJ-cortex',
+    name: 'Cortex',
+    root_page_url: 'https://www.notion.so/Cortex-11111111111111111111111111111111',
+    notion_parent_page_id: '22222222-2222-2222-2222-222222222222',
+    notion_review_page_id: '33333333-3333-3333-3333-333333333333',
+    notion_memory_page_id: '44444444-4444-4444-4444-444444444444',
+    notion_scan_page_id: '55555555-5555-5555-5555-555555555555',
+  });
+  assert.equal(upsert.status, 200);
+
+  const context = await getJson(baseUrl, '/notion/custom-agent/context?project_id=PRJ-cortex');
+  assert.equal(context.status, 200);
+  assert.equal(context.body.async_contract.scope_guard.enforce_known_project_pages, true);
+  assert.deepEqual(
+    context.body.async_contract.scope_guard.configured_page_ids.sort(),
+    [
+      '11111111111111111111111111111111',
+      '22222222222222222222222222222222',
+      '33333333333333333333333333333333',
+      '44444444444444444444444444444444',
+      '55555555555555555555555555555555',
+    ].sort(),
+  );
+});
+
+test('notion custom agent webhook ignores out-of-scope pages when project scope is configured', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-notion-custom-agent-out-of-scope-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-23T10:10:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  const upsert = await postJson(baseUrl, '/projects/upsert', {
+    project_id: 'PRJ-cortex',
+    notion_parent_page_id: '22222222-2222-2222-2222-222222222222',
+  });
+  assert.equal(upsert.status, 200);
+
+  const response = await postJson(baseUrl, '/webhook/notion-custom-agent', {
+    project_id: 'PRJ-cortex',
+    page_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    discussion_id: 'discussion-005',
+    comment_id: 'comment-005',
+    body: '这条评论来自另一个无关页面。',
+    source_url: 'notion://page/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/discussion/discussion-005/comment/comment-005',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.skipped, true);
+  assert.equal(response.body.skip_reason, 'out_of_scope_page');
+  assert.equal(response.body.workflow_path, 'ignored');
+  assert.deepEqual(response.body.project_scope_page_ids, ['22222222222222222222222222222222']);
+  assert.deepEqual(response.body.incoming_scope_page_ids, ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+
+  const commands = await getJson(baseUrl, '/commands?project_id=PRJ-cortex');
+  assert.equal(commands.status, 200);
+  assert.equal(commands.body.commands.length, 0);
+});
+
+test('notion custom agent webhook accepts project child pages when ancestry includes the scoped parent', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-notion-custom-agent-in-scope-child-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-23T10:20:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  const upsert = await postJson(baseUrl, '/projects/upsert', {
+    project_id: 'PRJ-cortex',
+    notion_parent_page_id: '22222222-2222-2222-2222-222222222222',
+  });
+  assert.equal(upsert.status, 200);
+
+  const response = await postJson(baseUrl, '/webhook/notion-custom-agent', {
+    project_id: 'PRJ-cortex',
+    page_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    page_ancestry_ids: [
+      '99999999-9999-9999-9999-999999999999',
+      '22222222-2222-2222-2222-222222222222',
+    ],
+    discussion_id: 'discussion-006',
+    comment_id: 'comment-006',
+    body: '来自项目子页面的正常评论。',
+    owner_agent: 'agent-router',
+    source_url: 'notion://page/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/discussion/discussion-006/comment/comment-006',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.workflow_path, 'command');
+  assert.equal(response.body.skipped || false, false);
+
+  const commands = await getJson(baseUrl, '/commands?project_id=PRJ-cortex');
+  assert.equal(commands.status, 200);
+  assert.equal(commands.body.commands.length, 1);
 });

@@ -227,6 +227,123 @@ function extractNotionCustomAgentSelfActorId(body) {
   );
 }
 
+function extractNotionPageId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  const direct = raw.replace(/-/g, '');
+  if (/^[0-9a-fA-F]{32}$/.test(direct)) {
+    return direct.toLowerCase();
+  }
+
+  const urlMatch = raw.match(/([0-9a-fA-F]{32})(?:\?|$)/);
+  if (urlMatch) {
+    return String(urlMatch[1]).toLowerCase();
+  }
+
+  return raw.toLowerCase();
+}
+
+function arrayFromPossibleValues(...values) {
+  const result = [];
+
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      result.push(...value);
+      continue;
+    }
+
+    if (typeof value === 'string' && value.includes(',')) {
+      result.push(...value.split(','));
+      continue;
+    }
+
+    if (value !== undefined && value !== null && value !== '') {
+      result.push(value);
+    }
+  }
+
+  return result;
+}
+
+function buildNotionProjectScope(project) {
+  const configuredIds = new Set(
+    [
+      extractNotionPageId(project?.rootPageUrl || project?.root_page_url),
+      extractNotionPageId(project?.notionParentPageId || project?.notion_parent_page_id),
+      extractNotionPageId(project?.notionReviewPageId || project?.notion_review_page_id),
+      extractNotionPageId(project?.notionMemoryPageId || project?.notion_memory_page_id),
+      extractNotionPageId(project?.notionScanPageId || project?.notion_scan_page_id),
+    ].filter(Boolean),
+  );
+
+  return {
+    configuredPageIds: [...configuredIds],
+  };
+}
+
+function collectNotionCustomAgentScopeIds(body) {
+  const values = arrayFromPossibleValues(
+    body.page_id,
+    body.pageId,
+    body.target_id,
+    body.targetId,
+    body.page_ancestry_ids,
+    body.pageAncestryIds,
+    body.ancestor_page_ids,
+    body.ancestorPageIds,
+    body.scope_page_ids,
+    body.scopePageIds,
+    body.in_scope_page_ids,
+    body.inScopePageIds,
+  );
+
+  return [...new Set(values.map(extractNotionPageId).filter(Boolean))];
+}
+
+function evaluateNotionCustomAgentProjectScope(body, project) {
+  const allowOutOfScope = parseOptionalBoolean(body.allow_out_of_scope ?? body.allowOutOfScope);
+  if (allowOutOfScope === true) {
+    return {
+      skip: false,
+      configuredPageIds: [],
+      incomingScopeIds: collectNotionCustomAgentScopeIds(body),
+      matchedPageIds: [],
+    };
+  }
+
+  const scope = buildNotionProjectScope(project);
+  if (scope.configuredPageIds.length === 0) {
+    return {
+      skip: false,
+      configuredPageIds: [],
+      incomingScopeIds: collectNotionCustomAgentScopeIds(body),
+      matchedPageIds: [],
+    };
+  }
+
+  const incomingScopeIds = collectNotionCustomAgentScopeIds(body);
+  const matchedPageIds = incomingScopeIds.filter((id) => scope.configuredPageIds.includes(id));
+  if (matchedPageIds.length > 0) {
+    return {
+      skip: false,
+      configuredPageIds: scope.configuredPageIds,
+      incomingScopeIds,
+      matchedPageIds,
+    };
+  }
+
+  return {
+    skip: true,
+    reason: 'out_of_scope_page',
+    configuredPageIds: scope.configuredPageIds,
+    incomingScopeIds,
+    matchedPageIds: [],
+  };
+}
+
 function evaluateNotionCustomAgentLoopGuard(body) {
   const selfAuthored = parseOptionalBoolean(
     body.self_authored ??
@@ -1314,6 +1431,7 @@ export function createCortexServer(options = {}) {
 
       if (req.method === 'GET' && url.pathname === '/notion/custom-agent/context') {
         const result = engine.buildProjectReview(url.searchParams.get('project_id'));
+        const projectScope = buildNotionProjectScope(result.project);
 
         return sendJson(res, 200, {
           ...buildProjectReviewPayload(result),
@@ -1338,6 +1456,20 @@ export function createCortexServer(options = {}) {
               acceptedAuthorFields: ['self_authored', 'created_by.id', 'actor_id', 'invoked_agent_actor_id'],
               recommendation:
                 'Pass self_authored=true for agent-written comments, or provide created_by.id plus invoked_agent_actor_id so Cortex can suppress self-trigger loops.',
+            },
+            scope_guard: {
+              enforce_known_project_pages: projectScope.configuredPageIds.length > 0,
+              configured_page_ids: projectScope.configuredPageIds,
+              accepted_scope_fields: ['page_id', 'target_id', 'page_ancestry_ids'],
+              recommendation:
+                'Pass page_ancestry_ids when comments may happen on project child pages, so Cortex can verify the page is inside the current project scope.',
+            },
+            scopeGuard: {
+              enforceKnownProjectPages: projectScope.configuredPageIds.length > 0,
+              configuredPageIds: projectScope.configuredPageIds,
+              acceptedScopeFields: ['page_id', 'target_id', 'page_ancestry_ids'],
+              recommendation:
+                'Pass page_ancestry_ids when comments may happen on project child pages, so Cortex can verify the page is inside the current project scope.',
             },
             legacy_poller: 'disabled_by_default',
             legacyPoller: 'disabled_by_default',
@@ -1774,6 +1906,9 @@ export function createCortexServer(options = {}) {
         const body = await readJsonBody(req);
         requireFields(body, ['page_id', 'discussion_id', 'comment_id', 'body']);
         const loopGuard = evaluateNotionCustomAgentLoopGuard(body);
+        const projectId = body.project_id || 'PRJ-cortex';
+        const projectReview = engine.buildProjectReview(projectId);
+        const scopeGuard = evaluateNotionCustomAgentProjectScope(body, projectReview.project);
 
         if (loopGuard.skip) {
           return sendJson(res, 200, {
@@ -1804,10 +1939,37 @@ export function createCortexServer(options = {}) {
           });
         }
 
+        if (scopeGuard.skip) {
+          return sendJson(res, 200, {
+            ok: true,
+            skipped: true,
+            skip_reason: scopeGuard.reason,
+            skipReason: scopeGuard.reason,
+            collaboration_mode: 'custom_agent',
+            collaborationMode: 'custom_agent',
+            workflow_path: 'ignored',
+            workflowPath: 'ignored',
+            signal_level: null,
+            signalLevel: null,
+            command_id: null,
+            commandId: null,
+            decision_id: null,
+            decisionId: null,
+            invoked_agent: body.invoked_agent || null,
+            invokedAgent: body.invoked_agent || null,
+            project_scope_page_ids: scopeGuard.configuredPageIds,
+            projectScopePageIds: scopeGuard.configuredPageIds,
+            incoming_scope_page_ids: scopeGuard.incomingScopeIds,
+            incomingScopePageIds: scopeGuard.incomingScopeIds,
+            matched_scope_page_ids: scopeGuard.matchedPageIds,
+            matchedScopePageIds: scopeGuard.matchedPageIds,
+          });
+        }
+
         const decisionInput = buildNotionCustomAgentDecisionInput(body);
         if (decisionInput) {
           const result = engine.createDecision({
-            projectId: body.project_id,
+            projectId,
             ...decisionInput,
           });
 
@@ -1844,7 +2006,7 @@ export function createCortexServer(options = {}) {
         }
 
         const result = engine.ingestNotionComment({
-          projectId: body.project_id,
+          projectId,
           targetType: body.target_type,
           targetId: body.target_id,
           pageId: body.page_id,

@@ -185,6 +185,9 @@ flowchart LR
    - agent 自己在 discussion 里的回复，不应该再次进入 Cortex 形成自触发循环
    - 最稳妥的做法是 payload 里显式带 `self_authored=true`
    - 如果 Notion 侧方便拿到 actor id，也可以传 `created_by.id` + `invoked_agent_actor_id`
+8. 同时配置项目页面边界，不要让 Router 在 workspace 里到处吃评论。
+   - 如果评论可能发生在项目子页面，payload 里要带 `page_ancestry_ids`
+   - Cortex 会用 `page_id / target_id / page_ancestry_ids` 去判断这条评论是否属于当前项目页面树
 
 ### Phase 1 Router Prompt 骨架
 
@@ -289,6 +292,7 @@ Rules:
   "anchor_block_id": "optional notion block id",
   "route_to": "agent-pm",
   "self_authored": false,
+  "page_ancestry_ids": ["ancestor-page-id", "project-parent-page-id"],
   "created_by": {
     "id": "notion-user-id",
     "type": "person_or_bot",
@@ -317,6 +321,32 @@ Cortex 当前约定是：
    - `workflow_path=ignored`
 
 这层保护的目的不是“少处理一条评论”，而是防止 Router 在 Notion discussion 中因为自己的回复不断再触发自己。
+
+## 页面边界规则
+
+除了防回环，Cortex 还会做项目页面边界检查。
+
+当前规则是：
+
+1. 如果项目已经配置了这些页面 id：
+   - `root_page_url`
+   - `notion_parent_page_id`
+   - `notion_review_page_id`
+   - `notion_memory_page_id`
+   - `notion_scan_page_id`
+2. 那么 `Custom Agent` 发来的事件，必须至少有一个 scope id 命中这些页面：
+   - `page_id`
+   - `target_id`
+   - `page_ancestry_ids`
+3. 如果没有命中，Cortex 会返回：
+   - `skipped=true`
+   - `skip_reason=out_of_scope_page`
+   - `workflow_path=ignored`
+
+最重要的一条实践：
+
+- 如果 Notion 评论可能出现在项目子页面而不是根页面，`page_ancestry_ids` 一定要传
+- 否则 Cortex 无法区分“这是项目子页”还是“这是完全无关的另一个页面”
 
 Webhook 响应约定：
 
