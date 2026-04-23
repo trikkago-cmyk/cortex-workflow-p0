@@ -113,6 +113,22 @@ flowchart LR
 - 原生对话：在页面和 discussion 内与 agent 交互
 - 原生执行：agent 在 Notion 内决定是否继续、追问、回帖
 
+## 默认写入原则
+
+- 默认主路径：`Notion Custom Agent + MCP`
+- 默认真相源：`Cortex local Markdown + SQLite`
+- 默认行为：本地 Cortex 进程不再主动用 `NOTION_API_KEY` 静默 push review / memory / execution / project index
+- token-based Notion API 写入只保留为：
+  - migration backfill
+  - legacy mirror
+  - 临时运维修复
+
+也就是说：
+
+- `评论 / @mention -> Custom Agent -> Cortex API` 是正式主路径
+- `本地脚本主动把页面写回 Notion` 不再是默认能力
+- 如果真的要保留旧镜像链路，必须显式设置 `NOTION_WRITE_MODE=legacy_api`
+
 ## 迁移原则
 
 - `notion-loop` 不再默认启动
@@ -312,6 +328,12 @@ Webhook 响应约定：
 6. Receipt 回流
    - 模拟 executor 完成后回调 `POST /webhook/agent-receipt`
    - 预期：command 状态关闭，Notion discussion 可收到结果摘要
+
+## Optional Legacy Mirroring
+
+只有在你明确选择继续保留 `NOTION_API_KEY` 那套本地镜像脚本时，下面这段排障才有意义。
+
+如果你走的是纯 `Custom Agent + MCP` 协作路径，可以直接跳过这一节。
 
 ## Workspace 迁移与权限排障
 

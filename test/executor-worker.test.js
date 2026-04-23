@@ -60,6 +60,7 @@ test('executor worker claims notion comment, replies, and completes command', as
     baseUrl,
     agentName: 'agent-notion-worker',
     source: 'notion_comment',
+    allowLegacyNotionWrites: true,
     notionApiKey: 'test-notion-key',
     notionReply: async (payload) => {
       replies.push(payload);
@@ -88,6 +89,61 @@ test('executor worker claims notion comment, replies, and completes command', as
   assert.equal(commandList.body.commands[0].status, 'done');
   assert.equal(commandList.body.commands[0].ack, `ack:${ingested.body.commandId}`);
   assert.equal(commandList.body.commands[0].result_summary, '评论任务已完成');
+});
+
+test('executor worker no longer fails when custom-agent mode skips token-based notion reply', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-executor-custom-agent-no-token-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-23T09:00:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const address = app.server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const ingested = await postJson(baseUrl, '/webhook/notion-comment', {
+    project_id: 'PRJ-cortex',
+    target_type: 'page',
+    target_id: 'page-custom-agent',
+    page_id: 'page-custom-agent',
+    discussion_id: 'discussion-custom-agent',
+    comment_id: 'comment-custom-agent',
+    body: '[agent: agent-notion-worker] [continue] 按 custom agent 主路径继续',
+    context_quote: 'custom agent path',
+    source_url: 'notion://page/page-custom-agent/discussion/discussion-custom-agent/comment/comment-custom-agent',
+  });
+
+  assert.equal(ingested.status, 200);
+
+  const worker = createExecutorWorker({
+    baseUrl,
+    agentName: 'agent-notion-worker',
+    source: 'notion_comment',
+    logger: {
+      info() {},
+      error() {},
+    },
+    executor: async ({ command }) => ({
+      status: 'done',
+      replyText: `已处理：${command.instruction}`,
+      resultSummary: 'custom agent path completed',
+    }),
+  });
+
+  const result = await worker.pollOnce();
+  assert.equal(result.claimed, true);
+  assert.equal(result.handled.status, 'done');
+  assert.equal(result.handled.replied, false);
+  assert.equal(result.handled.replySkipped, true);
+  assert.equal(result.handled.replySkipReason, 'legacy_notion_api_writes_disabled');
+
+  const commandList = await getJson(baseUrl, '/commands?command_id=' + encodeURIComponent(ingested.body.commandId));
+  assert.equal(commandList.status, 200);
+  assert.equal(commandList.body.commands[0].status, 'done');
+  assert.equal(commandList.body.commands[0].result_summary, 'custom agent path completed');
 });
 
 test('executor worker webhook mode sends command payload and completes command', async (t) => {

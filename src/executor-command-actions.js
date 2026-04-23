@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { defaultSyncPreferencesFile, updateSyncPreferences } from './notion-sync-preferences.js';
+import { isLegacyNotionApiWriteScript, notionLegacyApiWritesEnabled } from './notion-write-mode.js';
 
 function compact(value) {
   return String(value || '')
@@ -273,11 +274,21 @@ async function executeStructuredCommentAction({ fetchImpl, cortexBaseUrl, logger
   return null;
 }
 
-function runScriptsBestEffort(scriptNames = [], runScript, logger = console) {
+function runScriptsBestEffort(scriptNames = [], runScript, logger = console, options = {}) {
+  const allowLegacyNotionWrites = Boolean(options.allowLegacyNotionWrites);
   const runs = [];
   const warnings = [];
 
   for (const scriptName of scriptNames) {
+    if (!allowLegacyNotionWrites && isLegacyNotionApiWriteScript(scriptName)) {
+      runs.push({
+        scriptName,
+        skipped: true,
+        reason: 'legacy_notion_api_writes_disabled',
+      });
+      continue;
+    }
+
     try {
       runs.push(runScript(scriptName));
     } catch (error) {
@@ -336,6 +347,8 @@ export function inferExecutorActionPlan({ agentName, command }) {
         }, filePath);
       },
       replyText: '已直接执行：执行页不再展示顶部总览，已同步到最新执行记录。',
+      replyTextWhenLegacyWritesDisabled:
+        '已更新本地执行页偏好。当前默认主路径是 Custom Agent + MCP，本地进程不会再主动把执行页改动推送回 Notion。',
       resultSummary: `${agentName} executed action: disable execution summary nav`,
     };
   }
@@ -358,6 +371,8 @@ export function inferExecutorActionPlan({ agentName, command }) {
         }, filePath);
       },
       replyText: '已直接执行：执行页顶部总览已恢复，并已同步。',
+      replyTextWhenLegacyWritesDisabled:
+        '已更新本地执行页偏好。当前默认主路径是 Custom Agent + MCP，本地进程不会再主动把执行页改动推送回 Notion。',
       resultSummary: `${agentName} executed action: enable execution summary nav`,
     };
   }
@@ -367,6 +382,8 @@ export function inferExecutorActionPlan({ agentName, command }) {
       type: 'sync_memory',
       scripts: ['memory:notion-sync'],
       replyText: '已直接执行：协作 memory 已开始同步。',
+      replyTextWhenLegacyWritesDisabled:
+        '当前默认已切到 Custom Agent + MCP；本地 token-based memory mirror 未执行。如需保留旧镜像链路，请显式设置 `NOTION_WRITE_MODE=legacy_api`。',
       resultSummary: `${agentName} executed action: sync memory`,
     };
   }
@@ -376,6 +393,8 @@ export function inferExecutorActionPlan({ agentName, command }) {
       type: 'sync_notion_surfaces',
       scripts: ['execution:notion-sync', 'project-index:notion-sync'],
       replyText: '已直接执行：相关 Notion 页面已同步。',
+      replyTextWhenLegacyWritesDisabled:
+        '当前默认已切到 Custom Agent + MCP；本地进程不会再主动 push review / execution / project index 页面。',
       resultSummary: `${agentName} executed action: sync notion surfaces`,
     };
   }
@@ -394,7 +413,7 @@ export function inferExecutorActionPlan({ agentName, command }) {
     return {
       type: 'ack_comment_availability',
       scripts: [],
-      replyText: '能。当前 Notion 评论扫描和回帖链路在线。你直接在段落评论里写任务，我会在原评论线程回复并继续执行。',
+      replyText: '能。当前默认主路径是 Notion Custom Agent + MCP。你在 Notion 里评论或 @agent 后，Cortex 会继续执行；本地进程默认不再主动用 token 回帖。',
       resultSummary: `${agentName} executed action: ack comment availability`,
     };
   }
@@ -415,6 +434,8 @@ export function inferExecutorActionPlan({ agentName, command }) {
       scripts: ['execution:notion-sync'],
       replyText:
         '已直接补一条新的执行同步记录。之前没有追加，是因为没有新的 checkpoint；不是没在跑。后面这类追问我会先回评论线程，再补 execution 记录。',
+      replyTextWhenLegacyWritesDisabled:
+        '当前默认不再由本地进程静默 push execution 记录。后续以 Notion Custom Agent + MCP 读取 Cortex 当前状态为主，不代表没在跑。',
       resultSummary: `${agentName} executed action: explain sync quiet mode`,
     };
   }
@@ -456,7 +477,7 @@ export function inferExecutorActionPlan({ agentName, command }) {
     return {
       type: 'start_automation',
       scripts: ['automation:start', 'automation:status'],
-      replyText: '已直接执行：常驻 notion loop 和 executor workers 已启动。',
+      replyText: '已直接执行：Cortex 常驻自动化和 executor workers 已启动。legacy notion loop 只有显式选择 `legacy_polling` 才会启动。',
       resultSummary: `${agentName} executed action: start automation`,
     };
   }
@@ -484,6 +505,8 @@ export function inferExecutorActionPlan({ agentName, command }) {
         type: 'continue_notion_cycle',
         scripts: ['execution:notion-sync', 'project-index:notion-sync'],
         replyText: '已收到 continue。已继续推进当前 Notion 侧收口，并同步 execution / project index。',
+        replyTextWhenLegacyWritesDisabled:
+          '已收到 continue。当前默认主路径是 Custom Agent + MCP；我会继续推进 Cortex 状态收口，但不会再由本地进程主动同步 execution / project index 页面。',
         resultSummary: `${agentName} executed action: continue notion cycle`,
       };
     }
@@ -502,7 +525,12 @@ export function createExecutorActionHandler(options = {}) {
   const env = {
     ...process.env,
     ...options.env,
+    ...(options.notionWriteMode ? { NOTION_WRITE_MODE: options.notionWriteMode } : {}),
   };
+  const allowLegacyNotionWrites =
+    typeof options.allowLegacyNotionWrites === 'boolean'
+      ? options.allowLegacyNotionWrites
+      : notionLegacyApiWritesEnabled(env);
 
   const runScript =
     options.runScript ||
@@ -546,12 +574,19 @@ export function createExecutorActionHandler(options = {}) {
       plan.applyPreference(syncPreferencesFile);
     }
 
-    const { runs, warnings } = runScriptsBestEffort(plan.scripts || [], runScript, logger);
+    const { runs, warnings } = runScriptsBestEffort(plan.scripts || [], runScript, logger, {
+      allowLegacyNotionWrites,
+    });
+    const skippedLegacyWrite = runs.some((run) => run?.skipped && run?.reason === 'legacy_notion_api_writes_disabled');
+    const replyText =
+      skippedLegacyWrite && plan.replyTextWhenLegacyWritesDisabled
+        ? plan.replyTextWhenLegacyWritesDisabled
+        : plan.replyText;
 
     return {
       ok: true,
       status: 'done',
-      reply_text: plan.replyText,
+      reply_text: replyText,
       result_summary: plan.resultSummary,
       action_type: plan.type,
       runs,

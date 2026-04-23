@@ -7,7 +7,7 @@ It turns docs, comments, decisions, agent handoffs, receipts, and durable memory
 ## What It Does
 
 - Routes work into a SQLite-backed execution kernel: `projects`, `commands`, `decisions`, `runs`, `checkpoints`, `outbox`, and `receipts`.
-- Uses Notion as the async collaboration surface through Notion Custom Agents, page comments, review pages, and project memory pages.
+- Uses Notion as the async collaboration surface through Notion Custom Agents, page comments, and MCP-visible pages. Local token-based page mirroring is now legacy and opt-in.
 - Escalates red decisions to local macOS notifications, while yellow and green work stays in documents for async review.
 - Lets external agents register, claim work, execute, report progress, and complete tasks through HTTP APIs or handoff receipts.
 - Extracts candidate memory from stable collaboration signals, then keeps durable memory governed by source, evidence, confidence, and freshness.
@@ -63,12 +63,11 @@ npm run dev:stack
 
 如果环境里有 `NOTION_API_KEY`，且显式选择 `NOTION_COLLAB_MODE=legacy_polling`，`dev:stack` 才会自动一起拉起 `notion:loop`。
 
-如果要跑完整协作骨架，默认只需要三条进程：
+如果要跑完整协作骨架，默认只需要两条进程：
 
 ```bash
 npm start
 PANGHU_SEND_MODE=http PANGHU_SEND_URL=http://your-im-gateway npm run panghu:poll
-NOTION_API_KEY=secret_xxx npm run notion:loop:legacy
 ```
 
 如果要把 Notion 评论队列自动执行掉，再加一条 executor worker：
@@ -76,7 +75,6 @@ NOTION_API_KEY=secret_xxx npm run notion:loop:legacy
 ```bash
 AGENT_NAME=agent-notion-worker \
 SOURCE=notion_comment \
-NOTION_API_KEY=secret_xxx \
 EXECUTOR_MODE=echo \
 npm run executor:worker
 ```
@@ -84,8 +82,6 @@ npm run executor:worker
 如果要跑真实多 agent handler + 常驻 worker 池，直接用自动化启动器：
 
 ```bash
-NOTION_API_KEY=ntn_xxx \
-NOTION_PROJECT_INDEX_DATABASE_ID=your_db_id \
 NOTIFICATION_CHANNEL=hiredcity \
 NOTIFICATION_TARGET=your-target@example.com \
 npm run automation:start
@@ -102,6 +98,14 @@ npm run automation:start
 ```
 
 这会额外拉起 `local-notifier`，把 `red decision` 从 outbox 直接投递到 macOS 通知中心。
+
+如果你确实还要保留“本地进程主动用 Notion API 写 review / memory / execution / project index”的旧镜像链路，必须显式开启：
+
+```bash
+NOTION_WRITE_MODE=legacy_api
+```
+
+默认主路径已经切到 `Custom Agent + MCP`，即使环境里有 `NOTION_API_KEY`，本地执行链路也不会再自动把 Notion 当成主动推送目标。
 
 要把它做成本地开机自启，用 `launchd`，不要用 `systemd`：
 
@@ -688,6 +692,10 @@ curl -X POST http://127.0.0.1:19100/webhook/notion-comment \
     "anchor_block_id": "block-001"
   }'
 ```
+
+## Legacy Token-Based Notion Mirroring
+
+下面这些 `NOTION_API_KEY` / `notion:*sync` / `notion:bootstrap` 命令只保留给迁移、回填或临时镜像使用，不再属于 P0 默认主链路。
 
 把项目状态渲染成一份可同步到 Notion 的 review markdown：
 

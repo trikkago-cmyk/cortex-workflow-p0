@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultAgentRegistryFile, loadAgentRegistry } from './agent-registry.js';
 import { createExecutorActionHandler } from './executor-command-actions.js';
+import { isLegacyNotionApiWriteScript, notionLegacyApiWritesEnabled } from './notion-write-mode.js';
 
 function compact(value) {
   return String(value || '')
@@ -371,11 +372,21 @@ function createRunScript({ cwd, env }) {
   };
 }
 
-function runScriptsBestEffort(scriptNames = [], runScript, logger = console) {
+function runScriptsBestEffort(scriptNames = [], runScript, logger = console, options = {}) {
+  const allowLegacyNotionWrites = Boolean(options.allowLegacyNotionWrites);
   const runs = [];
   const warnings = [];
 
   for (const scriptName of scriptNames) {
+    if (!allowLegacyNotionWrites && isLegacyNotionApiWriteScript(scriptName)) {
+      runs.push({
+        scriptName,
+        skipped: true,
+        reason: 'legacy_notion_api_writes_disabled',
+      });
+      continue;
+    }
+
     try {
       runs.push(runScript(scriptName));
     } catch (error) {
@@ -430,6 +441,15 @@ export function createPmHandler(options = {}) {
   const cortexBaseUrl = options.cortexBaseUrl || process.env.CORTEX_BASE_URL || 'http://127.0.0.1:19100';
   const runScript = options.runScript || createRunScript({ cwd: options.cwd || process.cwd(), env: { ...process.env, ...options.env } });
   const logger = options.logger || console;
+  const env = {
+    ...process.env,
+    ...options.env,
+    ...(options.notionWriteMode ? { NOTION_WRITE_MODE: options.notionWriteMode } : {}),
+  };
+  const allowLegacyNotionWrites =
+    typeof options.allowLegacyNotionWrites === 'boolean'
+      ? options.allowLegacyNotionWrites
+      : notionLegacyApiWritesEnabled(env);
 
   return async ({ agentName, projectId, command }) => {
     const payload = await requestJson(fetchImpl, cortexBaseUrl, '/task-briefs', {
@@ -457,7 +477,12 @@ export function createPmHandler(options = {}) {
       },
     });
 
-    const { runs, warnings } = runScriptsBestEffort(['review:notion-sync', 'project-index:notion-sync'], runScript, logger);
+    const { runs, warnings } = runScriptsBestEffort(
+      ['review:notion-sync', 'project-index:notion-sync'],
+      runScript,
+      logger,
+      { allowLegacyNotionWrites },
+    );
     return {
       ok: true,
       status: 'done',
@@ -487,6 +512,15 @@ export function createArchitectHandler(options = {}) {
   const cortexBaseUrl = options.cortexBaseUrl || process.env.CORTEX_BASE_URL || 'http://127.0.0.1:19100';
   const runScript = options.runScript || createRunScript({ cwd: options.cwd || process.cwd(), env: { ...process.env, ...options.env } });
   const logger = options.logger || console;
+  const env = {
+    ...process.env,
+    ...options.env,
+    ...(options.notionWriteMode ? { NOTION_WRITE_MODE: options.notionWriteMode } : {}),
+  };
+  const allowLegacyNotionWrites =
+    typeof options.allowLegacyNotionWrites === 'boolean'
+      ? options.allowLegacyNotionWrites
+      : notionLegacyApiWritesEnabled(env);
   const notificationTarget =
     options.notificationTarget || process.env.NOTIFICATION_TARGET || process.env.CORTEX_NOTIFICATION_TARGET || '';
   const notificationChannel =
@@ -512,7 +546,12 @@ export function createArchitectHandler(options = {}) {
       },
     });
 
-    const { runs, warnings } = runScriptsBestEffort(['review:notion-sync', 'project-index:notion-sync'], runScript, logger);
+    const { runs, warnings } = runScriptsBestEffort(
+      ['review:notion-sync', 'project-index:notion-sync'],
+      runScript,
+      logger,
+      { allowLegacyNotionWrites },
+    );
     const decisionId = payload.decision.decision_id || payload.decision.decisionId;
     return {
       ok: true,
@@ -553,12 +592,26 @@ export function createArchitectHandler(options = {}) {
 export function createEvaluatorHandler(options = {}) {
   const runScript = options.runScript || createRunScript({ cwd: options.cwd || process.cwd(), env: { ...process.env, ...options.env } });
   const logger = options.logger || console;
+  const env = {
+    ...process.env,
+    ...options.env,
+    ...(options.notionWriteMode ? { NOTION_WRITE_MODE: options.notionWriteMode } : {}),
+  };
+  const allowLegacyNotionWrites =
+    typeof options.allowLegacyNotionWrites === 'boolean'
+      ? options.allowLegacyNotionWrites
+      : notionLegacyApiWritesEnabled(env);
 
   return async ({ agentName, command }) => {
     const signalLevel = inferEvaluatorSignal([command.instruction, command.context_quote || command.contextQuote].filter(Boolean).join(' '));
     const qualityGrade = inferQualityGrade([command.instruction, command.context_quote || command.contextQuote].filter(Boolean).join(' '));
     const anomalyLevel = inferAnomalyLevel([command.instruction, command.context_quote || command.contextQuote].filter(Boolean).join(' '));
-    const { runs, warnings } = runScriptsBestEffort(['review:notion-sync', 'project-index:notion-sync'], runScript, logger);
+    const { runs, warnings } = runScriptsBestEffort(
+      ['review:notion-sync', 'project-index:notion-sync'],
+      runScript,
+      logger,
+      { allowLegacyNotionWrites },
+    );
 
     return {
       ok: true,

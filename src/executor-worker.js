@@ -1,6 +1,7 @@
 import { defaultAgentRegistryFile, resolveExecutorRouteFromAgentRegistry } from './agent-registry.js';
 import { parseNotionSourceUrl, replyToDiscussion } from './notion-agent-sync.js';
 import { resolveExecutorRoute } from './executor-routing.js';
+import { notionLegacyApiWritesEnabled } from './notion-write-mode.js';
 
 function sleep(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -174,6 +175,15 @@ export function createExecutorWorker(options = {}) {
   const notionBaseUrl = options.notionBaseUrl || process.env.NOTION_BASE_URL;
   const notionVersion = options.notionVersion || process.env.NOTION_VERSION;
   const notionReply = options.notionReply || replyToDiscussion;
+  const env = {
+    ...process.env,
+    ...options.env,
+    ...(options.notionWriteMode ? { NOTION_WRITE_MODE: options.notionWriteMode } : {}),
+  };
+  const allowLegacyNotionWrites =
+    typeof options.allowLegacyNotionWrites === 'boolean'
+      ? options.allowLegacyNotionWrites
+      : notionLegacyApiWritesEnabled(env);
 
   if (!agentName) {
     throw new Error('AGENT_NAME is required');
@@ -235,6 +245,16 @@ export function createExecutorWorker(options = {}) {
       return null;
     }
 
+    if (!allowLegacyNotionWrites) {
+      logger.info?.(
+        `[executor-worker] skip token-based notion reply for ${command.command_id}: Custom Agent + MCP is the primary path`,
+      );
+      return {
+        skipped: true,
+        reason: 'legacy_notion_api_writes_disabled',
+      };
+    }
+
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is required to reply to notion comments');
     }
@@ -285,13 +305,15 @@ export function createExecutorWorker(options = {}) {
         };
       }
 
-      await maybeReplyToNotion(command, replyText);
+      const reply = await maybeReplyToNotion(command, replyText);
       await completeCommand(command.command_id, resultSummaryText);
 
       return {
         commandId: command.command_id,
         status: 'done',
-        replied: Boolean(replyText && command.source === 'notion_comment'),
+        replied: Boolean(replyText && command.source === 'notion_comment' && !reply?.skipped),
+        replySkipped: Boolean(reply?.skipped),
+        replySkipReason: reply?.reason || null,
         resultSummary: resultSummaryText,
       };
     } catch (error) {

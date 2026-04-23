@@ -243,6 +243,5 @@ test('notion comment directive can flow through router-owned command and update 
   const suggestionDetailPayload = await suggestionDetailResponse.json();
   assert.equal(suggestionDetailResponse.status, 200);
   assert.equal(suggestionDetailPayload.suggestion.status, 'accepted');
-  assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /已接受 suggestion/);
+  assert.equal(replies.length, 0);
 });

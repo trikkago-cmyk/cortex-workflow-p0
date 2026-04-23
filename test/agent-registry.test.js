@@ -271,5 +271,5 @@ test('multi-agent executor dispatches registry-defined handler kinds', async (t)
 
   assert.equal(result.status, 'done');
   assert.match(result.reply_text, /已转成 PM 任务简报/);
-  assert.deepEqual(runScriptCalls, ['review:notion-sync', 'project-index:notion-sync']);
+  assert.deepEqual(runScriptCalls, []);
 });
