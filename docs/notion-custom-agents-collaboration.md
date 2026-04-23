@@ -149,6 +149,10 @@ flowchart LR
 
 目标：Notion 里只配置一个 `Cortex Router` Custom Agent，所有评论和 mention 都先进入 Router。
 
+详细配置清单与联调步骤见：
+
+- [docs/notion-custom-agent-router-checklist.md](./notion-custom-agent-router-checklist.md)
+
 验收：
 
 - Notion comment 或 `@Cortex Router` 可以触发 agent。
