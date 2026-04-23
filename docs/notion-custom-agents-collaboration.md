@@ -181,6 +181,10 @@ flowchart LR
 6. 当前阶段不配置第二个 Custom Agent。
    - 其他 agent 仍然是 Cortex 内部的 `owner_agent`
    - Notion 里先只暴露 `Cortex Router` 这一个入口
+7. 打开 `comment added` 触发器时，必须同时配置防回环。
+   - agent 自己在 discussion 里的回复，不应该再次进入 Cortex 形成自触发循环
+   - 最稳妥的做法是 payload 里显式带 `self_authored=true`
+   - 如果 Notion 侧方便拿到 actor id，也可以传 `created_by.id` + `invoked_agent_actor_id`
 
 ### Phase 1 Router Prompt 骨架
 
@@ -283,9 +287,36 @@ Rules:
   "target_id": "notion-block-or-page-id",
   "context_quote": "the paragraph or task sentence around the comment",
   "anchor_block_id": "optional notion block id",
-  "route_to": "agent-pm"
+  "route_to": "agent-pm",
+  "self_authored": false,
+  "created_by": {
+    "id": "notion-user-id",
+    "type": "person_or_bot",
+    "name": "comment author"
+  },
+  "invoked_agent_actor_id": "notion-user-id-of-cortex-router"
 }
 ```
+
+## 防回环规则
+
+参考 `openclaw-notion-comment` 这类 Notion 评论协作实现，一个真实好用的异步读评链路必须处理“自己回复自己”的回环问题。
+
+Cortex 当前约定是：
+
+1. `Custom Agent` 自己写出的评论，不应再次落成新的 command / decision
+2. 最优先信号是：
+   - `self_authored=true`
+3. 其次也支持：
+   - `created_by.id`
+   - `actor_id`
+   - `invoked_agent_actor_id`
+4. 命中防回环时，`/webhook/notion-custom-agent` 会返回：
+   - `skipped=true`
+   - `skip_reason=self_authored_comment`
+   - `workflow_path=ignored`
+
+这层保护的目的不是“少处理一条评论”，而是防止 Router 在 Notion discussion 中因为自己的回复不断再触发自己。
 
 Webhook 响应约定：
 

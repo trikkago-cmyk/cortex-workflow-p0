@@ -149,6 +149,128 @@ function buildNotionCustomAgentDecisionInput(body) {
   };
 }
 
+function normalizeIdentity(value) {
+  return compact(value).toLowerCase();
+}
+
+function parseOptionalBoolean(value) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  const raw = compact(value).toLowerCase();
+  if (!raw) {
+    return null;
+  }
+
+  if (['1', 'true', 'yes', 'on'].includes(raw)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(raw)) {
+    return false;
+  }
+
+  return null;
+}
+
+function extractNotionCustomAgentActor(body) {
+  const createdBy =
+    body.created_by && typeof body.created_by === 'object'
+      ? body.created_by
+      : body.createdBy && typeof body.createdBy === 'object'
+        ? body.createdBy
+        : null;
+
+  return {
+    actorId: compact(
+      body.actor_id ||
+        body.actorId ||
+        body.comment_author_id ||
+        body.commentAuthorId ||
+        body.created_by_id ||
+        body.createdById ||
+        createdBy?.id,
+    ) || null,
+    actorType: compact(
+      body.actor_type ||
+        body.actorType ||
+        body.comment_author_type ||
+        body.commentAuthorType ||
+        body.created_by_type ||
+        body.createdByType ||
+        createdBy?.type ||
+        createdBy?.object,
+    ) || null,
+    actorName: compact(
+      body.actor_name ||
+        body.actorName ||
+        body.comment_author_name ||
+        body.commentAuthorName ||
+        body.created_by_name ||
+        body.createdByName ||
+        createdBy?.name,
+    ) || null,
+  };
+}
+
+function extractNotionCustomAgentSelfActorId(body) {
+  return (
+    compact(
+      body.invoked_agent_actor_id ||
+        body.invokedAgentActorId ||
+        body.self_actor_id ||
+        body.selfActorId ||
+        body.agent_actor_id ||
+        body.agentActorId,
+    ) || null
+  );
+}
+
+function evaluateNotionCustomAgentLoopGuard(body) {
+  const selfAuthored = parseOptionalBoolean(
+    body.self_authored ??
+      body.selfAuthored ??
+      body.self_generated ??
+      body.selfGenerated,
+  );
+  const skipSelfComments = parseOptionalBoolean(body.skip_self_comments ?? body.skipSelfComments);
+  const actor = extractNotionCustomAgentActor(body);
+  const selfActorId = extractNotionCustomAgentSelfActorId(body);
+
+  if (selfAuthored === true) {
+    return {
+      skip: true,
+      reason: 'self_authored_comment',
+      actor,
+      selfActorId,
+    };
+  }
+
+  if (skipSelfComments === false) {
+    return {
+      skip: false,
+      actor,
+      selfActorId,
+    };
+  }
+
+  if (actor.actorId && selfActorId && normalizeIdentity(actor.actorId) === normalizeIdentity(selfActorId)) {
+    return {
+      skip: true,
+      reason: 'self_authored_comment',
+      actor,
+      selfActorId,
+    };
+  }
+
+  return {
+    skip: false,
+    actor,
+    selfActorId,
+  };
+}
+
 function normalizeReceiptStatus(value) {
   const raw = compact(value).toLowerCase();
   if (['delivered', 'completed', 'failed', 'acknowledged', 'read'].includes(raw)) {
@@ -1205,6 +1327,18 @@ export function createCortexServer(options = {}) {
             replyChannel: 'notion_comment_discussion',
             reviewer_pattern: 'Notion Custom Agent receives mention/comment trigger and calls Cortex APIs directly.',
             reviewerPattern: 'Notion Custom Agent receives mention/comment trigger and calls Cortex APIs directly.',
+            loop_guard: {
+              ignore_self_comments: true,
+              accepted_author_fields: ['self_authored', 'created_by.id', 'actor_id', 'invoked_agent_actor_id'],
+              recommendation:
+                'Pass self_authored=true for agent-written comments, or provide created_by.id plus invoked_agent_actor_id so Cortex can suppress self-trigger loops.',
+            },
+            loopGuard: {
+              ignoreSelfComments: true,
+              acceptedAuthorFields: ['self_authored', 'created_by.id', 'actor_id', 'invoked_agent_actor_id'],
+              recommendation:
+                'Pass self_authored=true for agent-written comments, or provide created_by.id plus invoked_agent_actor_id so Cortex can suppress self-trigger loops.',
+            },
             legacy_poller: 'disabled_by_default',
             legacyPoller: 'disabled_by_default',
           },
@@ -1639,6 +1773,36 @@ export function createCortexServer(options = {}) {
       if (req.method === 'POST' && url.pathname === '/webhook/notion-custom-agent') {
         const body = await readJsonBody(req);
         requireFields(body, ['page_id', 'discussion_id', 'comment_id', 'body']);
+        const loopGuard = evaluateNotionCustomAgentLoopGuard(body);
+
+        if (loopGuard.skip) {
+          return sendJson(res, 200, {
+            ok: true,
+            skipped: true,
+            skip_reason: loopGuard.reason,
+            skipReason: loopGuard.reason,
+            collaboration_mode: 'custom_agent',
+            collaborationMode: 'custom_agent',
+            workflow_path: 'ignored',
+            workflowPath: 'ignored',
+            signal_level: null,
+            signalLevel: null,
+            command_id: null,
+            commandId: null,
+            decision_id: null,
+            decisionId: null,
+            invoked_agent: body.invoked_agent || null,
+            invokedAgent: body.invoked_agent || null,
+            actor_id: loopGuard.actor.actorId,
+            actorId: loopGuard.actor.actorId,
+            actor_type: loopGuard.actor.actorType,
+            actorType: loopGuard.actor.actorType,
+            actor_name: loopGuard.actor.actorName,
+            actorName: loopGuard.actor.actorName,
+            self_actor_id: loopGuard.selfActorId,
+            selfActorId: loopGuard.selfActorId,
+          });
+        }
 
         const decisionInput = buildNotionCustomAgentDecisionInput(body);
         if (decisionInput) {

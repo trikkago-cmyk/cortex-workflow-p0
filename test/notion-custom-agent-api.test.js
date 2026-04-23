@@ -44,6 +44,7 @@ test('notion custom agent context exposes the event-driven async contract', asyn
   assert.equal(context.body.collaboration_mode, 'custom_agent');
   assert.equal(context.body.async_contract.ingress, 'event_driven');
   assert.equal(context.body.async_contract.ingress_webhook, '/webhook/notion-custom-agent');
+  assert.equal(context.body.async_contract.loop_guard.ignore_self_comments, true);
 });
 
 test('notion custom agent webhook ingests agent-triggered comments without polling', async (t) => {
@@ -169,4 +170,49 @@ test('notion custom agent treats decision_context without explicit signal as yel
   assert.equal(hub.status, 200);
   assert.equal(hub.body.summary.yellow_count, 1);
   assert.equal(hub.body.summary.decide_queue_open_count, 1);
+});
+
+test('notion custom agent webhook ignores self-authored agent comments to avoid loops', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-notion-custom-agent-self-loop-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-23T09:30:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  const response = await postJson(baseUrl, '/webhook/notion-custom-agent', {
+    project_id: 'PRJ-cortex',
+    page_id: 'page-004',
+    discussion_id: 'discussion-004',
+    comment_id: 'comment-004',
+    body: '这是 Cortex Router 刚刚自己回帖的内容。',
+    invoked_agent: 'Cortex Router',
+    created_by: {
+      id: 'notion-user-router-001',
+      type: 'bot',
+      name: 'Cortex Router',
+    },
+    invoked_agent_actor_id: 'notion-user-router-001',
+    source_url: 'notion://page/page-004/discussion/discussion-004/comment/comment-004',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.skipped, true);
+  assert.equal(response.body.skip_reason, 'self_authored_comment');
+  assert.equal(response.body.workflow_path, 'ignored');
+  assert.equal(response.body.command_id, null);
+  assert.equal(response.body.decision_id, null);
+
+  const commands = await getJson(baseUrl, '/commands?project_id=PRJ-cortex');
+  assert.equal(commands.status, 200);
+  assert.equal(commands.body.commands.length, 0);
+
+  const decisions = await getJson(baseUrl, '/decisions?project_id=PRJ-cortex');
+  assert.equal(decisions.status, 200);
+  assert.equal(decisions.body.decisions.length, 0);
 });
