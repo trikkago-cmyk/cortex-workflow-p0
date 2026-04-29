@@ -1,11 +1,28 @@
 # Notion Custom Agents Async Collaboration
 
-最近更新：2026-04-27
+最近更新：2026-04-29
 
 ## 结论
 
 `Notion Custom Agents` 是 Cortex 在 Notion 内异步协作的正式主路径。  
 旧的 `notion-loop` 评论轮询已经退出主 runtime，不再继续维护为并行模式。
+
+## 当前落地状态
+
+- `2026-04-29` 已在当前本机 Cortex runtime 上执行 `npm run agent:live-uat -- --template-project PRJ-cortex --project PRJ-cortex-live-uat-20260429 --agent agent-live-uat-runtime`
+- 6 个核心场景已全部通过：
+  - `green -> command`
+  - `yellow -> decision_request`
+  - `red -> decision_request + outbox`
+  - `self-loop guard`
+  - `scope guard`
+  - `receipt -> command done + checkpoint`
+- 同一轮验收里，red 场景产生的临时 outbox 已自动归档，`remaining_pending_count = 0`
+- `npm run runtime:soak -- --project PRJ-cortex --iterations 2 --interval-ms 500 --samples 1` 也已返回 `status = ready`
+- 现在剩下的不是 Cortex 侧 contract，而是 Notion UI 里的最后一段人工挂接：
+  - 把公网 MCP endpoint 挂到目标 `Custom Agent`
+  - 打开 trigger
+  - 让 Notion agent 在 discussion 内真实回帖
 
 ## 目标形态
 

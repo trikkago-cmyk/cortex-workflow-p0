@@ -1,6 +1,6 @@
 # Notion Custom Agent 真机验收清单
 
-最近更新：2026-04-27
+最近更新：2026-04-29
 
 ## 当前结论
 
@@ -15,7 +15,62 @@
 - `Notion MCP 已重新连通`
 - 当前 Codex 会话已经可以 fetch 你的 `Cortex` 根页和子页
 - Cortex 侧已新增 `cortex-custom-agent-mcp` 工具门面
-- 接下来真正剩下的是 `Custom Agent trigger / tool / receipt` 的真机联调，而不是 OAuth 本身
+- 已新增 `npm run agent:live-uat`，可以对当前 Cortex runtime 直接跑一轮 6 场景 live UAT
+- 接下来真正剩下的是 `Notion UI trigger / tool connection / in-thread reply` 的最后人工挂接，而不是 OAuth 本身
+
+## 2026-04-29 当前结论
+
+这轮要把状态说准确：
+
+- `Cortex API / MCP / receipt` 这一段真机联调已经收口
+- `Notion UI 内真正由 Custom Agent 被 mention 后自己回帖` 这一段，还需要在目标 workspace 手动完成最后挂接
+
+也就是说：
+
+- 不能再说 “Cortex 侧还没准备好”
+- 但也不能夸大成 “Notion 端所有真实交互已经全自动完成”
+
+## 最新真实证据
+
+### 1. Cortex 侧 live UAT 已通过
+
+已在当前主 runtime 上执行：
+
+```bash
+npm run agent:live-uat -- \
+  --template-project PRJ-cortex \
+  --project PRJ-cortex-live-uat-20260429 \
+  --agent agent-live-uat-runtime
+```
+
+结果：
+
+- `6 / 6` 场景全部通过
+- `green_command` 生成 `CMD-20260429-004`
+- `yellow_decision` 生成 `DR-20260429-001`
+- `red_decision` 生成 `DR-20260429-002`，且 `outbox_queued=true`
+- `self_loop_guard` 返回 `skip_reason=self_authored_comment`
+- `scope_guard` 返回 `skip_reason=out_of_scope_page`
+- `receipt_writeback` 成功把 command 收口为 `done`，并生成 `RCP-20260429-002` 与 `CP-20260429-002`
+- red 验收残留已自动清理：`archived_outbox_count=1`，`remaining_pending_count=0`
+
+### 2. 短周期 soak 已通过
+
+已在当前主 runtime 上执行：
+
+```bash
+npm run runtime:soak -- --project PRJ-cortex --iterations 2 --interval-ms 500 --samples 1
+```
+
+结果：
+
+- `status = ready`
+- `steady_ready = true`
+- `2 / 2` 次连续 readiness 都是 `ready`
+- `10` 个正式受管进程全部 running
+- `launchd` 当前 `installed + loaded`
+- `pending_outbox = 0`
+- `open_red_decisions = 0`
 
 ## 已有真实证据
 
@@ -52,14 +107,43 @@
 - 能 fetch 当前执行页
 - 能 fetch 当前自定义智能体协作页和工作台结构
 
-### 2. 所以这轮还不能叫“当前空间真机验收已完成”
+### 2. 所以这轮该怎么定义“已完成”
 
 更准确的状态是：
 
-- `代码主路径已完成`
+- `Cortex 侧 live UAT 已完成`
 - `历史真实评论闭环存在`
 - `当前 Notion MCP 已连通`
-- `但 Notion Custom Agent 真机事件流还没在这个 workspace 里完整验完`
+- `Notion Custom Agent UI 侧最后挂接仍待完成`
+
+## 自动验收命令
+
+### 1. 短周期运行态 soak
+
+```bash
+npm run runtime:soak -- --project PRJ-cortex --iterations 6 --interval-ms 60000 --samples 1
+```
+
+用途：
+
+- 连续多轮采样 `runtime:readiness`
+- 自动汇总 `ready / warning / blocking` 变化
+- 适合看 `launchd + local_notification + worker pool` 是否稳定
+
+### 2. Cortex 侧 live UAT
+
+```bash
+npm run agent:live-uat -- \
+  --template-project PRJ-cortex \
+  --project PRJ-cortex-live-uat-<timestamp> \
+  --agent agent-live-uat-runtime
+```
+
+用途：
+
+- 直接验证 `Notion Custom Agent` 六场景 contract
+- 自动创建临时项目，不污染主项目
+- 自动归档 red 场景产生的临时 outbox
 
 ## 真机验收目标
 
@@ -221,9 +305,12 @@
 
 ## 验收完成标准
 
-同时满足下面 4 条，才能标记为“真机验收完成”：
+如果要把“当前 workspace 已完全真机验收完成”这句话说满，仍需同时满足下面 4 条：
 
 1. `green / yellow / red` 三条主分支都实测通过
 2. self-loop guard 和 scope guard 都实测通过
 3. 下游 receipt / checkpoint 回显真实出现
 4. 这轮证据已经写回本地 canonical doc
+
+当前第 `1` 和第 `4` 条，Cortex 侧已经满足。  
+还差的是第 `2/3` 条在 Notion UI 里的最后人工挂接与真实 discussion 回帖。

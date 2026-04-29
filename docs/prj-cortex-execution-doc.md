@@ -1,5 +1,15 @@
 # PRJ-cortex 执行文档
 
+## 2026-04-29 运行态 soak 与 Custom Agent live UAT 已收口成固定命令
+
+- 当前任务：把“还需要 soak 观察”和“还需要真机联调”从文档口径推进成可重复执行的命令，不再靠手工拼 payload 和肉眼翻日志。
+- 核心进展：1）已新增 `npm run runtime:soak`，可以连续调用 `runtime:readiness` 并自动汇总 `ready / warning / blocking`。2）已新增 `npm run agent:live-uat`，可以在真实 Cortex runtime 上直接验证 `green / yellow / red / self-loop / scope / receipt` 六个核心场景。3）当前主 runtime 已完成一次真实短周期 soak：`npm run runtime:soak -- --project PRJ-cortex --iterations 2 --interval-ms 500 --samples 1` 返回 `status=ready`、`steady_ready=true`。4）当前主 runtime 已完成一次真实 live UAT：`npm run agent:live-uat -- --template-project PRJ-cortex --project PRJ-cortex-live-uat-20260429 --agent agent-live-uat-runtime` 返回 `6/6` 场景通过，且 red 验收残留已自动归档、`remaining_pending_count=0`。
+- 本轮新增完成：新增 `src/runtime-soak.js`、`scripts/runtime-soak.js`、`src/notion-custom-agent-live-uat.js`、`scripts/notion-custom-agent-live-uat.js`、对应测试与 package scripts。
+- 🔴 红灯：无新的系统级红灯。当前未完成项不再是 Cortex contract，而是 Notion UI 里的最后人工挂接。
+- 🟡 黄灯：小时级以上的长稳 soak 仍未跑满；Notion Custom Agent 在目标 workspace 里的 trigger / MCP endpoint / discussion reply 仍需最终挂接。
+- 🟢 已推进：`soak 观察` 与 `真机联调` 现在都已经有固定命令、固定验收口径和自动清理机制，不再是“下一步再看”的开放待办。
+- 下一步：1）跑更长时间窗口的 `runtime:soak`；2）把公网 MCP endpoint 挂到目标 Notion Custom Agent；3）在真实 discussion 里完成最后一轮 agent reply 验收。
+
 ## 2026-04-27 Custom Agent MCP 门面已落地并启动
 
 - 当前任务：把 `Notion Custom Agent` 的异步评论入口从“文档里的 REST 设想”推进成 Notion 可挂载的 MCP 工具入口。

@@ -16,16 +16,18 @@
 - `本地红灯唤醒`：已新增 `local_notification` 通道，支持 macOS 系统通知直推，不再依赖胖虎代理。
 - `本地常驻托管`：已补 `launchd` 安装 / 状态 / 卸载脚本，可在本机登录态下自动 ensure Cortex 栈。
 - `运行态体检`：已新增 `runtime:readiness`，可统一检查 `automation /health / launchd / failed command / failed outbox / pending outbox / receipt / red decision`。
+- `短周期 soak`：已新增 `runtime:soak`，可把多轮 readiness 观察收口成一份可复跑的 soak 报告。
 - `真实 Notion 评论回流`：已在目标 Notion 页面验证评论可入队、路由、执行并形成 checkpoint / 文档收口；当前正切换到 `Notion Custom Agents` 主路径。
 - `Custom Agent MCP 门面`：已新增 `cortex-custom-agent-mcp`，Notion 侧可通过 `get_cortex_context / ingest_notion_comment / claim_next_command / submit_agent_receipt` 四个工具接入 Cortex 内核。
 - `外部 Agent 灰度验收`：已新增 `agent:onboarding-smoke`，同步 webhook 和 `handoff + receipt` 两条路径都能一键验。
+- `Custom Agent 六场景 live UAT`：已新增 `agent:live-uat`，可在真实 Cortex runtime 上直接验证 `green / yellow / red / self-loop / scope / receipt`，并自动清理临时 red outbox。
 
 ### 🟡 还差最后一层产品化 / 运行态收口
 
 - `Connect 接入体验`：现在是 backend API + 文档，已经够支撑 MVP 接入；更完整的 Native 页面不再作为 P0 阻塞项。
 - `memory freshness / revalidation`：对象模型有位置，但还没真正跑起来。
 - `更自然的评论语义理解`：现在 direct action 主要依赖结构化指令，不做自然语言宽匹配。
-- `Notion Custom Agents 真机联调`：Cortex 侧 MCP tool server 已落地并本机启动，但 Notion UI 里仍需配置公网 HTTPS MCP endpoint，并完成 trigger / tool connection / receipt 回显真机联调。
+- `Notion Custom Agents 真机联调`：Cortex 侧 MCP / API / receipt contract 已经 live 验过；Notion UI 里仍需配置公网 HTTPS MCP endpoint，并完成 trigger / tool connection / discussion reply 的最后人工挂接。
 
 ### 🔴 仍然卡住上线判断
 
@@ -38,14 +40,14 @@ Cortex 现在已经不是“从零开始”的概念稿了。
 但它也还不是可上线状态。
 最关键的历史红灯已经调整了方向：
 不再把企业 IM 当成 P0 的唯一唤醒方式，而是改成“本地 Cortex + 本地系统通知”。
-当前剩下的核心问题已经从“网络拓扑打不通”收敛成“本地运行态需要继续 soak 观察，以及 Notion Custom Agents 真机联调是否收口”。
+当前剩下的核心问题已经从“网络拓扑打不通”收敛成“小时级以上的长稳 soak 还要继续拉长，以及 Notion Custom Agent 在目标 workspace 内的最后 UI 挂接是否收口”。
 
 ## 2026-04-27 新增真实进展
 
 - `Notion MCP` 已重新连通，当前 Codex 会话已经可以直接 fetch 当前 `Cortex` 根页与子页面。
 - `/dashboard` 已切到默认净化视图，真实运行态数据与 smoke / 验收残留不再混在一起展示。
 - `cortex-custom-agent-mcp` 已本机启动，MCP client 已验证可列出 4 个 tools 并调用 `get_cortex_context`。
-- 当前测试基线已提升到 `npm test = 176 / 176` 通过。
+- 当前测试基线已提升到 `npm test = 179 / 179` 通过。
 
 ## 2026-04-29 新增真实进展
 
@@ -57,6 +59,14 @@ Cortex 现在已经不是“从零开始”的概念稿了。
   - `launchd` 已 installed + loaded
   - 已新增 `runtime:cleanup`，并在本机把历史 `failed command / failed outbox / pending outbox / open red decision` 全部归档清理
   - 当前 `npm run runtime:readiness -- --samples 2 --interval-ms 500` 已回到 `status = ready`
+- `npm run runtime:soak -- --project PRJ-cortex --iterations 2 --interval-ms 500 --samples 1` 已在本机执行，当前结果是：
+  - `status = ready`
+  - `steady_ready = true`
+  - `2 / 2` 次连续采样都为 `ready`
+  - `10` 个正式受管进程全部 running
+  - `launchd = installed + loaded`
+  - `pending_outbox = 0`
+  - `open_red_decisions = 0`
 - `node --test test/runtime-readiness.test.js test/external-agent-onboarding-smoke.test.js` 已通过。
 - `npm run agent:onboarding-smoke -- --mode handoff ...` 已在本机 live 跑通：
   - Connect onboarding 成功
@@ -64,7 +74,10 @@ Cortex 现在已经不是“从零开始”的概念稿了。
   - handoff outbox 成功生成
   - `/webhook/agent-receipt` 成功回写
   - receipt / checkpoint 已落库
-- `npm test` 已全量通过，当前基线为 `176 / 176`。
+- `npm run agent:live-uat -- --template-project PRJ-cortex --project PRJ-cortex-live-uat-20260429 --agent agent-live-uat-runtime` 已在本机 live 跑通：
+  - `green / yellow / red / self-loop / scope / receipt` 共 `6 / 6` 场景通过
+  - red 场景产生的临时 outbox 已自动归档
+  - `remaining_pending_count = 0`
 
 ## 当前真实状态
 
@@ -88,7 +101,7 @@ Cortex 现在已经不是“从零开始”的概念稿了。
 - Notion 异步协作主路径已经收口为：`Notion Custom Agents -> MCP tools -> Cortex API -> 本地真相源`
 - `notion-loop` 已退出默认 runtime，不再作为并行主路径维护
 - 本地测试是健康的：
-  - `npm test` 176 / 176 通过
+  - `npm test` 179 / 179 通过
   - `npm run executor:smoke` 通过，已覆盖 `agent-router -> agent-pm / agent-architect`
   - `node --test test/cortex-mcp-server.test.js test/automation-processes.test.js test/notion-custom-agent-api.test.js` 通过，已覆盖 Custom Agent MCP 门面
   - `node --test test/runtime-readiness.test.js test/external-agent-onboarding-smoke.test.js` 通过，已覆盖运行态体检与外部 agent onboarding smoke
@@ -128,7 +141,8 @@ Cortex 现在已经不是“从零开始”的概念稿了。
   - checkpoint 成功落库
 - `runtime:readiness` 已把运行态检查收敛成固定命令，不再需要手翻多份日志
 - `agent:onboarding-smoke` 已把外部接入金路径收敛成固定命令，不再需要手搓多步联调
-- 但 `launchd` 的更长时间运行还没做足够长时间验证，所以现在仍然先算“已接通、待 soak”
+- `agent:live-uat` 已把 Custom Agent 六场景 contract 收敛成固定命令，不再需要手搓多条 webhook / receipt payload
+- 但 `launchd` 的更长时间运行还没做足够长时间验证，所以现在仍然先算“已接通、待长稳 soak”
 
 ### ❌ 现在还没完成
 
@@ -139,7 +153,7 @@ Cortex 现在已经不是“从零开始”的概念稿了。
 
 - `现在可以开始灰度接入`：可以先让 `1-2` 个其他工程 agent 接入 Cortex 协作。
 - `现在还不建议直接全量铺开`：因为常驻长稳、跨工程 SOP、最小可观测性还差最后一轮收口。
-- `现在还不建议直接全量铺开`：因为常驻长稳 soak 和 Notion Custom Agent 真机联调还没做完。
+- `现在还不建议直接全量铺开`：因为小时级以上长稳 soak 和 Notion Custom Agent 的最后 UI 挂接还没做完。
 - 建议顺序：
   - 先接一个真实其他工程 agent 做灰度
   - 跑满一轮 `command -> route -> execute -> receipt/reply`

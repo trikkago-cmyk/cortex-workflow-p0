@@ -35,12 +35,14 @@ This repository is a P0 alpha. The backend runtime, SQLite truth source, multi-a
 
 Still being finalized:
 
-- Real workspace setup for Notion Custom Agent triggers and tool connections.
-- Longer-running `launchd + local_notification` soak observation.
+- Final Notion workspace hookup for Custom Agent trigger, MCP endpoint, and in-thread reply behavior.
+- Longer-running `launchd + local_notification` soak observation beyond the short-cycle smoke already passing.
 
 Operational hardening already in place:
 
 - `runtime:readiness` now returns `ready` on the local `PRJ-cortex` runtime after backlog cleanup.
+- `runtime:soak` can now turn repeated readiness checks into a summarized soak report.
+- `agent:live-uat` can now exercise the six core Notion Custom Agent scenarios against a live Cortex runtime without polluting the main project.
 - Historical smoke residue can be archived through `npm run runtime:cleanup -- --project PRJ-cortex --max-age-hours 24`.
 
 ## Key Docs
@@ -211,6 +213,32 @@ npm run runtime:cleanup -- --project PRJ-cortex --max-age-hours 24
 - 最近 failed command / failed outbox / pending outbox
 - 最近 receipt
 - 当前待拍板 red decision
+
+如果要把多轮 readiness 观察收口成一份 soak 报告：
+
+```bash
+npm run runtime:soak -- --project PRJ-cortex --iterations 6 --interval-ms 60000 --samples 1
+```
+
+如果要对当前 Cortex 运行态直接跑一遍 `Notion Custom Agent` 六场景 live UAT：
+
+```bash
+npm run agent:live-uat -- \
+  --template-project PRJ-cortex \
+  --project PRJ-cortex-live-uat-20260429 \
+  --agent agent-live-uat-runtime
+```
+
+这个命令会验证：
+
+- `green -> command`
+- `yellow -> decision_request`
+- `red -> decision_request + outbox`
+- `self-loop guard`
+- `scope guard`
+- `receipt -> command done + checkpoint`
+
+并在验完后自动归档临时 red outbox，避免污染主 runtime 的 readiness。
 
 如果只是临时托底，才用本地 stub：
 
