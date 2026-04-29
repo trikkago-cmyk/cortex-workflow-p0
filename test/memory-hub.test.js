@@ -96,9 +96,10 @@ test('buildMemoryHubDocuments renders global layered memory hub with pending can
     generatedAt: new Date('2026-04-16T14:00:00.000Z'),
   });
 
-  assert.match(documents.index, /Raw materials/);
-  assert.match(documents.index, /待裁定 Candidate：1/);
+  assert.match(documents.index, /原始材料/);
+  assert.match(documents.index, /待裁定候选：1/);
   assert.match(documents.index, /docs\/memory\/knowledge\.md/);
+  assert.match(documents.index, /docs\/projects\/\*\/memory\.md/);
   assert.match(documents.baseMemory, /当前基线/);
   assert.match(documents.baseMemory, /少确认。低风险事项直接推进/);
   assert.match(documents.knowledge, /评论扫描闭环/);

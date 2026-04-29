@@ -40,24 +40,6 @@ function resolveRetryDelayMs(response, attempt) {
   return DEFAULT_NOTION_RETRY_BASE_MS * attempt;
 }
 
-function chunkRichText(text, maxLength = 1900) {
-  const normalized = String(text || '').trim();
-  if (!normalized) {
-    return [];
-  }
-
-  const chunks = [];
-  for (let index = 0; index < normalized.length; index += maxLength) {
-    chunks.push({
-      type: 'text',
-      text: {
-        content: normalized.slice(index, index + maxLength),
-      },
-    });
-  }
-  return chunks;
-}
-
 async function notionRequest(pathname, { apiKey, baseUrl, notionVersion, method = 'GET', body } = {}) {
   const validated = validateNotionConfig({ apiKey, baseUrl, notionVersion });
   let lastError = null;
@@ -322,23 +304,4 @@ export async function scanCommentsUnderPage({
   }
 
   return [...uniqueComments.values()].sort((left, right) => left.createdTime.localeCompare(right.createdTime));
-}
-
-export async function replyToDiscussion({
-  apiKey,
-  discussionId,
-  text,
-  baseUrl = DEFAULT_NOTION_BASE_URL,
-  notionVersion = DEFAULT_NOTION_VERSION,
-}) {
-  return notionRequest('/v1/comments', {
-    apiKey,
-    baseUrl,
-    notionVersion,
-    method: 'POST',
-    body: {
-      discussion_id: discussionId,
-      rich_text: chunkRichText(text),
-    },
-  });
 }

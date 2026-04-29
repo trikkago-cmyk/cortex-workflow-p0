@@ -155,7 +155,6 @@ async function main() {
     });
 
     const pool = loadExecutorPoolConfig(poolFile);
-    const notionReply = async () => ({ id: 'reply-live-smoke' });
     const logger = { info() {}, error() {} };
 
     const routerConfig = pool.workers.find((worker) => worker.agentName === 'agent-router');
@@ -171,8 +170,6 @@ async function main() {
       onlyUnassigned: routerConfig.onlyUnassigned,
       mode: routerConfig.mode,
       routingFile,
-      notionApiKey: 'smoke-notion-key',
-      notionReply,
       logger,
     });
 
@@ -185,8 +182,6 @@ async function main() {
       onlyUnassigned: pmConfig.onlyUnassigned,
       mode: pmConfig.mode,
       routingFile,
-      notionApiKey: 'smoke-notion-key',
-      notionReply,
       logger,
     });
 
@@ -199,8 +194,6 @@ async function main() {
       onlyUnassigned: architectConfig.onlyUnassigned,
       mode: architectConfig.mode,
       routingFile,
-      notionApiKey: 'smoke-notion-key',
-      notionReply,
       logger,
     });
 

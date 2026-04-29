@@ -2,8 +2,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { defaultAgentRegistryFile, deriveExecutorPoolFromAgentRegistry } from '../src/agent-registry.js';
-import { listNotionLoopProjects, localNotificationPollerEnabled, notionLoopProcessName, panghuPollerEnabled } from '../src/automation-processes.js';
-import { notionCollaborationMode, notionCommentPollingEnabled } from '../src/notion-collaboration-mode.js';
+import { customAgentMcpEnabled, localNotificationPollerEnabled, panghuPollerEnabled } from '../src/automation-processes.js';
+import { notionCollaborationMode } from '../src/notion-collaboration-mode.js';
 import { buildExecutorWorkerEnv, loadExecutorPoolConfig } from '../src/executor-pool.js';
 import { resolvePanghuRuntimeConfig } from '../src/panghu-runtime.js';
 import { loadProjectEnv } from '../src/project-env.js';
@@ -14,7 +14,6 @@ loadProjectEnv(process.cwd(), {
 
 const cwd = process.cwd();
 const runtimeDir = resolve(cwd, 'tmp', 'automation-runtime');
-const notionApiKey = process.env.NOTION_API_KEY || '';
 const notionBaseUrl = process.env.NOTION_BASE_URL || '';
 const notionVersion = process.env.NOTION_VERSION || '';
 const cortexBaseUrl = process.env.CORTEX_BASE_URL || 'http://127.0.0.1:19100';
@@ -22,7 +21,6 @@ const cortexDbPath = process.env.CORTEX_DB_PATH || resolve(cwd, 'db', 'cortex.db
 const cortexDefaultProjectId = process.env.CORTEX_DEFAULT_PROJECT_ID || 'PRJ-cortex';
 const cortexDefaultChannel = process.env.CORTEX_DEFAULT_CHANNEL || 'hiredcity';
 const projectIndexDatabaseId = process.env.NOTION_PROJECT_INDEX_DATABASE_ID || '';
-const notionLoopIntervalMs = String(process.env.LOOP_INTERVAL_MS || 3000);
 const notionCollabMode = notionCollaborationMode(process.env);
 const executorWebhookHost = process.env.EXECUTOR_WEBHOOK_HOST || '127.0.0.1';
 const executorWebhookPort = String(process.env.EXECUTOR_WEBHOOK_PORT || 3010);
@@ -42,6 +40,10 @@ const panghuSendToken = process.env.PANGHU_SEND_TOKEN || '';
 const panghuPollIntervalMs = String(process.env.PANGHU_POLL_INTERVAL_MS || 1500);
 const panghuAllowDryRun = process.env.PANGHU_ALLOW_DRY_RUN || '';
 const localNotificationPollIntervalMs = String(process.env.LOCAL_NOTIFICATION_POLL_INTERVAL_MS || 1000);
+const cortexMcpHost = process.env.CORTEX_MCP_HOST || '127.0.0.1';
+const cortexMcpPort = String(process.env.CORTEX_MCP_PORT || 19101);
+const cortexMcpAllowedHosts = process.env.CORTEX_MCP_ALLOWED_HOSTS || '';
+const cortexMcpBearerToken = process.env.CORTEX_MCP_BEARER_TOKEN || '';
 const panghuRuntime = resolvePanghuRuntimeConfig({
   sendMode: panghuSendMode,
   sendFile: panghuSendFile,
@@ -133,12 +135,23 @@ results.push(
   }),
 );
 
+if (customAgentMcpEnabled(process.env)) {
+  results.push(
+    spawnDetached('cortex-custom-agent-mcp', ['src/cortex-mcp-server.js'], {
+      CORTEX_BASE_URL: cortexBaseUrl,
+      CORTEX_MCP_HOST: cortexMcpHost,
+      CORTEX_MCP_PORT: cortexMcpPort,
+      CORTEX_MCP_ALLOWED_HOSTS: cortexMcpAllowedHosts,
+      CORTEX_MCP_BEARER_TOKEN: cortexMcpBearerToken,
+    }),
+  );
+}
+
 results.push(
   spawnDetached('executor-multi-agent-handler', ['src/executor-multi-agent-handler.js'], {
     EXECUTOR_HANDLER_HOST: executorWebhookHost,
     EXECUTOR_HANDLER_PORT: executorWebhookPort,
     CORTEX_BASE_URL: cortexBaseUrl,
-    NOTION_API_KEY: notionApiKey,
     NOTION_BASE_URL: notionBaseUrl,
     NOTION_VERSION: notionVersion,
     NOTION_PROJECT_INDEX_DATABASE_ID: projectIndexDatabaseId,
@@ -185,33 +198,11 @@ if (localNotificationPollerEnabled(process.env, { cwd, dbPath: cortexDbPath })) 
   );
 }
 
-if (notionApiKey && notionCommentPollingEnabled(process.env)) {
-  for (const project of listNotionLoopProjects({
-    cwd,
-    dbPath: cortexDbPath,
-    defaultProjectId: cortexDefaultProjectId,
-  })) {
-    results.push(
-      spawnDetached(notionLoopProcessName(project.projectId), ['scripts/notion-loop.js'], {
-        CORTEX_BASE_URL: cortexBaseUrl,
-        NOTION_API_KEY: notionApiKey,
-        NOTION_BASE_URL: notionBaseUrl,
-        NOTION_VERSION: notionVersion,
-        LOOP_INTERVAL_MS: notionLoopIntervalMs,
-        NOTION_PROJECT_INDEX_DATABASE_ID: projectIndexDatabaseId,
-        PROJECT_ID: project.projectId,
-        ...(project.name ? { PROJECT_NAME: project.name } : {}),
-      }),
-    );
-  }
-}
-
 if (existsSync(agentRegistryFile) || existsSync(executorPoolFile)) {
   const pool = existsSync(agentRegistryFile)
     ? deriveExecutorPoolFromAgentRegistry(agentRegistryFile, {
         fallbackWebhookUrl: executorWebhookUrl,
         fallbackWebhookToken: executorWebhookToken,
-        notionApiKey,
         notionBaseUrl,
         notionVersion,
       })
@@ -225,7 +216,6 @@ if (existsSync(agentRegistryFile) || existsSync(executorPoolFile)) {
           routingFile: worker.routingFile,
           webhookUrl: worker.webhookUrl || executorWebhookUrl,
           webhookToken: worker.webhookToken || executorWebhookToken,
-          notionApiKey: worker.notionApiKey || notionApiKey,
           notionBaseUrl: worker.notionBaseUrl || notionBaseUrl,
           notionVersion: worker.notionVersion || notionVersion,
         }),

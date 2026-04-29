@@ -4,7 +4,7 @@
 
 - 让胖虎不再依赖手工跑 `npm run agent:receipt`
 - 在企业 IM 侧任务真正完成后，自动把结果回写到 Cortex
-- 如果原任务来自 Notion 评论，同时自动回到原 discussion
+- 如果原任务来自 Notion 评论，`reply_text` 会进入 `receipt / checkpoint`，再由 Notion 协作面原生回显
 
 ## Cortex 这边已经准备好的部分
 

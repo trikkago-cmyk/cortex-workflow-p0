@@ -159,9 +159,6 @@ export function normalizeRegistryAgent(agent = {}, defaults = {}) {
     webhookToken: normalizeText(
       pickRaw(agent.webhook_token ?? agent.webhookToken, normalizedDefaults.webhook_token ?? normalizedDefaults.webhookToken),
     ),
-    notionApiKey: normalizeText(
-      pickRaw(agent.notion_api_key ?? agent.notionApiKey, normalizedDefaults.notion_api_key ?? normalizedDefaults.notionApiKey),
-    ),
     notionBaseUrl: normalizeText(
       pickRaw(agent.notion_base_url ?? agent.notionBaseUrl, normalizedDefaults.notion_base_url ?? normalizedDefaults.notionBaseUrl),
     ),
@@ -236,7 +233,6 @@ export function deriveExecutorPoolFromAgentRegistry(input, options = {}) {
   const { registry, registryFile } = readRegistry(input, options);
   const fallbackWebhookUrl = normalizeText(options.fallbackWebhookUrl);
   const fallbackWebhookToken = normalizeText(options.fallbackWebhookToken);
-  const notionApiKey = normalizeText(options.notionApiKey);
   const notionBaseUrl = normalizeText(options.notionBaseUrl);
   const notionVersion = normalizeText(options.notionVersion);
 
@@ -258,7 +254,6 @@ export function deriveExecutorPoolFromAgentRegistry(input, options = {}) {
         routingFile: agent.routingFile,
         webhookUrl: agent.webhookUrl || (agent.mode === 'webhook' ? buildAgentWebhookUrl(fallbackWebhookUrl, agent.agentName) : null),
         webhookToken: agent.webhookToken || fallbackWebhookToken,
-        notionApiKey: agent.notionApiKey || notionApiKey,
         notionBaseUrl: agent.notionBaseUrl || notionBaseUrl,
         notionVersion: agent.notionVersion || notionVersion,
         extraEnv: {

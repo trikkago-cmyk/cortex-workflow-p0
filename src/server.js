@@ -3,9 +3,8 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { CortexEngine } from './engine.js';
 import { createStore } from './store.js';
-import { parseNotionSourceUrl, replyToDiscussion } from './notion-agent-sync.js';
-import { appendReceiptLog } from './notion-receipt-mirror.js';
 import { CortexProjector } from './projector.js';
+import { buildTaskDashboardPayload, renderTaskDashboardPage } from './task-dashboard.js';
 import { defaultAgentRegistryFile } from './agent-registry.js';
 import {
   getConnectAgent,
@@ -21,6 +20,14 @@ function sendJson(res, statusCode, payload) {
     'Content-Length': Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+function sendHtml(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(html),
+  });
+  res.end(html);
 }
 
 function compact(value) {
@@ -1123,10 +1130,6 @@ export function createCortexServer(options = {}) {
       defaultProjectId: options.defaultProjectId,
       defaultChannel: options.defaultChannel,
     });
-  const notionApiKey = options.notionApiKey || process.env.NOTION_API_KEY || '';
-  const notionBaseUrl = options.notionBaseUrl || process.env.NOTION_BASE_URL;
-  const notionVersion = options.notionVersion || process.env.NOTION_VERSION;
-  const notionReply = options.notionReply || replyToDiscussion;
   const projector = options.projector || new CortexProjector({ engine });
   const cwd = options.cwd || process.cwd();
   const connectFiles = {
@@ -1427,6 +1430,23 @@ export function createCortexServer(options = {}) {
         const result = engine.buildProjectReview(url.searchParams.get('project_id'));
 
         return sendJson(res, 200, buildProjectReviewPayload(result));
+      }
+
+      if (req.method === 'GET' && url.pathname === '/dashboard/data') {
+        return sendJson(
+          res,
+          200,
+          buildTaskDashboardPayload(engine, url.searchParams.get('project_id'), {
+            includeSynthetic: parseOptionalBoolean(url.searchParams.get('include_synthetic')) === true,
+          }),
+        );
+      }
+
+      if (req.method === 'GET' && url.pathname === '/dashboard') {
+        const payload = buildTaskDashboardPayload(engine, url.searchParams.get('project_id'), {
+          includeSynthetic: parseOptionalBoolean(url.searchParams.get('include_synthetic')) === true,
+        });
+        return sendHtml(res, 200, renderTaskDashboardPage(payload));
       }
 
       if (req.method === 'GET' && url.pathname === '/notion/custom-agent/context') {
@@ -2362,32 +2382,9 @@ export function createCortexServer(options = {}) {
 
           projector.projectReceipt(updatedCommand, receiptResult.receipt);
 
-          let replyId = null;
           const replyText = compact(replyTextInput);
-          if (replyText && notionApiKey && commandRecord.source === 'notion_comment' && commandRecord.sourceUrl) {
-            const sourceRef = parseNotionSourceUrl(commandRecord.sourceUrl);
-            if (sourceRef?.discussionId) {
-              const reply = await notionReply({
-                apiKey: notionApiKey,
-                discussionId: sourceRef.discussionId,
-                text: replyText,
-                baseUrl: notionBaseUrl,
-                notionVersion,
-              });
-              replyId = reply?.id || null;
-            }
-          }
-
-          setImmediate(() => {
-            appendReceiptLog({
-              apiKey: notionApiKey,
-              project,
-              receipt: receiptResult.receipt,
-              command: updatedCommand,
-              baseUrl: notionBaseUrl,
-              notionVersion,
-            }).catch(() => {});
-          });
+          const notionFeedbackMode =
+            replyText && commandRecord.source === 'notion_comment' ? 'docs_only' : null;
 
           return sendJson(res, 200, {
             ok: true,
@@ -2400,7 +2397,9 @@ export function createCortexServer(options = {}) {
             command: mapCommandForApi(updatedCommand),
             checkpoint: mapCheckpointForApi(checkpointResult.checkpoint),
             decision: decisionResult?.decision ? mapDecisionForApi(decisionResult.decision) : null,
-            reply_id: replyId,
+            reply_id: null,
+            notion_feedback_mode: notionFeedbackMode,
+            notionFeedbackMode,
             outbox: updatedOutbox,
           });
         } catch (error) {
@@ -2585,6 +2584,12 @@ export function createCortexServer(options = {}) {
         const body = await readJsonBody(req);
         requireFields(body, ['id', 'error']);
         return sendJson(res, 200, engine.failOutbox(body.id, body.error));
+      }
+
+      if (req.method === 'POST' && url.pathname === '/outbox/archive') {
+        const body = await readJsonBody(req);
+        requireFields(body, ['id']);
+        return sendJson(res, 200, engine.archiveOutbox(body.id, body.note));
       }
 
       if (req.method === 'POST' && url.pathname === '/commands/claim') {

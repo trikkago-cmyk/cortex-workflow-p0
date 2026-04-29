@@ -5,8 +5,10 @@ import {
   appendMarkdownEntryToNotion,
   buildAppendEntryMarkdown,
   createPage,
+  extractNotionPageId,
   markdownToNotionBlocks,
   prependMarkdownEntryToNotion,
+  resolveProjectSyncPreserveBlockTypes,
   stripTopLevelTitle,
   syncReviewMarkdownToNotion,
 } from '../src/notion-review-sync.js';
@@ -38,6 +40,37 @@ test('stripTopLevelTitle removes only the first h1 title', () => {
 
   assert.equal(stripped, `## Section
 - Item`);
+});
+
+test('extractNotionPageId normalizes raw ids and notion urls', () => {
+  assert.equal(
+    extractNotionPageId('34a359ec-3ad4-805f-ba9e-d8e669018c0d'),
+    '34a359ec3ad4805fba9ed8e669018c0d',
+  );
+  assert.equal(
+    extractNotionPageId('https://www.notion.so/Cortex-34a359ec3ad4805fba9ed8e669018c0d?source=copy_link'),
+    '34a359ec3ad4805fba9ed8e669018c0d',
+  );
+});
+
+test('resolveProjectSyncPreserveBlockTypes preserves nested structure only for root-like pages', () => {
+  const rootResult = resolveProjectSyncPreserveBlockTypes({
+    pageId: '34a359ec-3ad4-805f-ba9e-d8e669018c0d',
+    project: {
+      root_page_url: 'https://www.notion.so/Cortex-34a359ec3ad4805fba9ed8e669018c0d?source=copy_link',
+      notion_parent_page_id: '34a359ec-3ad4-805f-ba9e-d8e669018c0d',
+    },
+  }).sort();
+  const leafResult = resolveProjectSyncPreserveBlockTypes({
+    pageId: '34b359ec-3ad4-81f9-a200-fc2456eff1d4',
+    project: {
+      root_page_url: 'https://www.notion.so/Cortex-34a359ec3ad4805fba9ed8e669018c0d?source=copy_link',
+      notion_parent_page_id: '34a359ec-3ad4-805f-ba9e-d8e669018c0d',
+    },
+  });
+
+  assert.deepEqual(rootResult, ['child_database', 'child_page']);
+  assert.deepEqual(leafResult, []);
 });
 
 test('buildAppendEntryMarkdown wraps history heading and metadata', () => {
@@ -424,6 +457,81 @@ test('treats archived block delete races as handled and still appends fresh cont
   assert.deepEqual(result, { deleted: 1, appended: 1 });
   assert.equal(requests.filter((request) => request.method === 'DELETE').length, 1);
   assert.equal(requests.filter((request) => request.method === 'PATCH').length, 1);
+});
+
+test('preserves child pages and child databases while replacing top-level markdown blocks', async (t) => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+
+    const bodyText = Buffer.concat(chunks).toString('utf8');
+    const parsedBody = bodyText ? JSON.parse(bodyText) : null;
+    requests.push({
+      method: req.method,
+      url: req.url,
+      body: parsedBody,
+      headers: req.headers,
+    });
+
+    if (req.method === 'GET' && req.url === '/v1/blocks/page-keep-children/children?page_size=100') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          results: [
+            { id: 'block-text-1', type: 'heading_2', archived: false, in_trash: false },
+            { id: 'block-page-1', type: 'child_page', archived: false, in_trash: false },
+            { id: 'block-db-1', type: 'child_database', archived: false, in_trash: false },
+          ],
+        }),
+      );
+      return;
+    }
+
+    if (req.method === 'DELETE' && req.url === '/v1/blocks/block-text-1') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (req.method === 'PATCH' && req.url === '/v1/blocks/page-keep-children/children') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          results: (parsedBody?.children || []).map((child, index) => ({
+            id: `inserted-${index + 1}`,
+            type: child.type,
+          })),
+        }),
+      );
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const result = await syncReviewMarkdownToNotion({
+    apiKey: 'notion-secret',
+    pageId: 'page-keep-children',
+    markdown: '# 新总览\n- 当前任务：继续推进',
+    preserveBlockTypes: ['child_page', 'child_database'],
+    baseUrl,
+  });
+
+  assert.deepEqual(result, { deleted: 1, appended: 2 });
+  assert.equal(requests.filter((request) => request.method === 'DELETE').length, 1);
+  const patchRequest = requests.find((request) => request.method === 'PATCH');
+  assert.equal(patchRequest?.body?.position?.type, 'start');
+  assert.equal(patchRequest?.body?.children?.length, 2);
 });
 
 test('appendMarkdownEntryToNotion preserves old blocks and appends a divider plus new blocks', async (t) => {

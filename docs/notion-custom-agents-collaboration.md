@@ -1,11 +1,11 @@
 # Notion Custom Agents Async Collaboration
 
-最近更新：2026-04-21
+最近更新：2026-04-27
 
 ## 结论
 
 `Notion Custom Agents` 是 Cortex 在 Notion 内异步协作的正式主路径。  
-旧的 `notion-loop` 评论轮询只保留为 `legacy fallback`，不再作为默认运行模式。
+旧的 `notion-loop` 评论轮询已经退出主 runtime，不再继续维护为并行模式。
 
 ## 目标形态
 
@@ -13,7 +13,7 @@
 
 1. 你在 Notion 页面或评论中直接 `@Cortex Router`
 2. `Notion Custom Agent` 被原生触发
-3. Custom Agent 直接调用 Cortex API / MCP 工具获取上下文与写入动作
+3. Custom Agent 调用 Cortex MCP 工具获取上下文与写入动作
 4. Cortex 落库 `command / decision / checkpoint / memory`
 5. 需要回复时，由 Custom Agent 直接回到当前 Notion discussion
 6. 红灯事项由 Cortex 继续走本地系统通知
@@ -21,7 +21,7 @@
 ```mermaid
 flowchart TD
   A["Human comments or @mentions in Notion"] --> B["Notion Custom Agent trigger"]
-  B --> C["GET /notion/custom-agent/context"]
+  B --> C["MCP tool: get_cortex_context"]
   C --> D["Classify green / yellow / red"]
   D -->|green| E["Create or continue command"]
   D -->|yellow| F["Write review note and wait for comment"]
@@ -41,7 +41,7 @@ flowchart TD
 它的成熟设计对 Cortex 有 5 个直接借鉴点：
 
 - `Unified workspace`：OpenAgents 把人和多个 agent 放进同一个 workspace；Cortex 不新增前台，而是把 Notion 页面 / discussion 当成人机异步 workspace，把 SQLite + Markdown 当成真相源。
-- `Event-driven collaboration`：OpenAgents 强调 agent 响应事件而不是持续轮询；Cortex 的正式路径也应是 Notion Custom Agent 原生触发，`notion-loop` 只做 legacy fallback。
+- `Event-driven collaboration`：OpenAgents 强调 agent 响应事件而不是持续轮询；Cortex 的正式路径也是 Notion Custom Agent 原生触发，而不是本地评论轮询。
 - `@mention delegation`：OpenAgents 支持在同一线程里通过 `@mention` 拉 agent 进来；Cortex 保留 `@mention / route_to / owner_agent`，但真正的任务归属写入 command，而不是只依赖评论文本。
 - `Task lifecycle`：OpenAgents 的 task delegation 有 assigned / progress / completed / failed / timeout；Cortex 对应使用 `commands / runs / checkpoints / agent_receipts / decisions`，并把状态变化同步回 Notion。
 - `Shared artifacts`：OpenAgents 让 agents 共享文件、线程和浏览器；Cortex P0 只共享文档工件：review page、execution page、memory page、project index。
@@ -94,7 +94,7 @@ flowchart LR
 | Agent roster | `docs/agent-registry.json` + Connect API | Agents are discoverable and routable |
 | Thread message | Notion discussion event | One comment creates one command or action |
 | Task delegation | `commands / owner_agent / route_to` | Assigned agent can claim, execute, and complete |
-| Progress report | `runs / checkpoints / receipts` | Notion shows latest checkpoint and discussion reply |
+| Progress report | `runs / checkpoints / receipts` | Notion shows latest checkpoint and doc-level progress |
 | Human decision | `decision_requests` + local notification | Red decisions wait for human approval |
 | Shared memory | `memory_items / memory_sources` | Durable memory keeps source, evidence, confidence, freshness |
 
@@ -106,12 +106,13 @@ flowchart LR
 - 红灯通知：`local_notification`
 - 结构化上下文：`GET /project-review` 与 `GET /notion/custom-agent/context`
 - Notion agent 事件入口：`POST /webhook/notion-custom-agent`
+- MCP 工具门面：`src/cortex-mcp-server.js`
 
 ## Notion 侧职责
 
 - 原生触发：`@mention agent` / `comment added`
 - 原生对话：在页面和 discussion 内与 agent 交互
-- 原生执行：agent 在 Notion 内决定是否继续、追问、回帖
+- 原生执行：agent 在 Notion 内决定是否继续、追问、回复当前线程
 
 ## 默认写入原则
 
@@ -125,15 +126,14 @@ flowchart LR
 
 也就是说：
 
-- `评论 / @mention -> Custom Agent -> Cortex API` 是正式主路径
+- `评论 / @mention -> Custom Agent -> MCP tools -> Cortex API` 是正式主路径
 - `本地脚本主动把页面写回 Notion` 不再是默认能力
-- 如果真的要保留旧镜像链路，必须显式设置 `NOTION_WRITE_MODE=legacy_api`
+- 异步回执结果默认只进入 `receipt / checkpoint / docs`，不再由本地 token 回写 discussion
 
 ## 迁移原则
 
-- `notion-loop` 不再默认启动
+- `notion-loop` 已移出默认 runtime
 - `NOTION_COLLAB_MODE=custom_agent` 作为默认模式
-- 只有显式 `legacy_polling` 才启动评论轮询
 - 现有 `/webhook/notion-comment` 保留兼容，不作为主入口
 
 ## P0 落地范围
@@ -170,16 +170,16 @@ flowchart LR
    - `A comment is added to a page`
 3. 给它的系统职责写清 4 件事：
    - 先读当前 page / discussion / comment 上下文
-   - 调 `GET /notion/custom-agent/context?project_id=PRJ-cortex` 拉 Cortex 当前项目态
+   - 调 `get_cortex_context` 拉 Cortex 当前项目态
    - 判断 `green / yellow / red`
-   - 再调 `POST /webhook/notion-custom-agent` 把事件写回 Cortex
+   - 再调 `ingest_notion_comment` 把事件写回 Cortex
 4. 允许它访问的 Cortex API 先限制在最小闭环：
-   - `GET /notion/custom-agent/context`
-   - `POST /webhook/notion-custom-agent`
-   - `POST /commands/claim-next`
-   - `POST /webhook/agent-receipt`
+   - `get_cortex_context`
+   - `ingest_notion_comment`
+   - `claim_next_command`
+   - `submit_agent_receipt`
 5. Router 的 system prompt 不要写成开放式大总管，而要写成一个明确的事件路由器：
-   - 先归类事件，再决定是否继续执行、回帖等待、或升级为红灯决策
+   - 先归类事件，再决定是否继续执行、在 Notion 线程内追问等待、或升级为红灯决策
    - 不把 Notion 当真相源
    - 所有 durable 状态都回 Cortex
 6. 当前阶段不配置第二个 Custom Agent。
@@ -202,9 +202,9 @@ You are Cortex Router, the single async entrypoint for Cortex collaboration in N
 
 Your job:
 1. Read the current page/comment context.
-2. Fetch Cortex project context from GET /notion/custom-agent/context?project_id=PRJ-cortex.
+2. Fetch Cortex project context with the MCP tool get_cortex_context.
 3. Classify the incoming event as green, yellow, or red.
-4. POST the event to /webhook/notion-custom-agent with page_id, discussion_id, comment_id, body, invoked_agent, owner_agent, source_url, and optional route_to.
+4. Call ingest_notion_comment with page_id, discussion_id, comment_id, body, invoked_agent, owner_agent, source_url, and optional route_to.
 5. For green and yellow items, continue collaboration in Notion comments.
 6. For red items, stop execution and let Cortex trigger the local human notification flow.
 
@@ -223,7 +223,7 @@ Rules:
 
 - `assigned`：command 写入 `owner_agent`。
 - `progress`：agent 写入 run / checkpoint。
-- `completed`：agent receipt 标记 command done，并回帖 Notion discussion。
+- `completed`：agent receipt 标记 command done，并把结果摘要暴露给 Notion 侧 agent 在当前 discussion 中回显。
 - `failed`：agent receipt 标记失败，并生成 review item。
 - `timed_out`：P0 暂不自动 timeout，只在后续补 watchdog。
 
@@ -386,7 +386,7 @@ Webhook 响应约定：
    - 预期：落 command，owner_agent 为 router 或明确指定 agent，后续进入执行
 4. Yellow case
    - 在 Notion 评论一个需要澄清但不阻塞的问题
-   - 预期：Router 回帖说明待确认点，并把状态写到 review 文档，不触发本地通知
+   - 预期：Router 在当前讨论线程说明待确认点，并把状态写到 review 文档，不触发本地通知
 5. Red case
    - 在 Notion 评论一个高风险决策，例如“直接覆盖现有对外文档结构”
    - 预期：Cortex 创建 decision request，并走本地系统通知
@@ -485,7 +485,5 @@ P0 的迁移顺序应当是：
 
 以下能力继续保留，但降级为兼容层：
 
-- `scripts/notion-loop.js`
-- `scripts/notion-comment-smoke.js`
 - `/webhook/notion-comment`
 - `docs/notion-routing.json`

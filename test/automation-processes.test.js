@@ -5,14 +5,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createStore } from '../src/store.js';
 import {
+  customAgentMcpEnabled,
   defaultRuntimeDir,
   listManagedProcessNames,
   listManagedStackWatchFiles,
   panghuPollerShouldRun,
 } from '../src/automation-processes.js';
-import { notionCollaborationMode, notionCommentPollingEnabled } from '../src/notion-collaboration-mode.js';
+import { notionCollaborationMode } from '../src/notion-collaboration-mode.js';
 
-test('listManagedProcessNames skips notion-loop by default in custom_agent mode', () => {
+test('listManagedProcessNames only includes active runtime processes', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'cortex-automation-processes-'));
   mkdirSync(join(cwd, 'docs'), { recursive: true });
   mkdirSync(defaultRuntimeDir(cwd), { recursive: true });
@@ -54,6 +55,7 @@ test('listManagedProcessNames skips notion-loop by default in custom_agent mode'
   });
 
   assert.deepEqual(names, [
+    'cortex-custom-agent-mcp',
     'cortex-server',
     'executor-multi-agent-handler',
     'executor-worker-agent-custom',
@@ -62,46 +64,11 @@ test('listManagedProcessNames skips notion-loop by default in custom_agent mode'
   ]);
 });
 
-test('listManagedProcessNames includes notion-loop in legacy_polling mode', () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'cortex-automation-legacy-'));
-  mkdirSync(join(cwd, 'docs'), { recursive: true });
-
-  writeFileSync(
-    join(cwd, 'docs', 'agent-registry.json'),
-    JSON.stringify(
-      {
-        defaults: {
-          project_id: 'PRJ-cortex',
-          source: 'notion_comment',
-          mode: 'webhook',
-        },
-        agents: [
-          {
-            agent_name: 'agent-router',
-            handler_kind: 'router',
-            owner_agent: null,
-            only_unassigned: true,
-          },
-        ],
-      },
-      null,
-      2,
-    ),
-    'utf8',
-  );
-
-  const previousMode = process.env.NOTION_COLLAB_MODE;
-  process.env.NOTION_COLLAB_MODE = 'legacy_polling';
-  try {
-    const names = listManagedProcessNames({ cwd });
-    assert.ok(names.includes('notion-loop-prj-cortex'));
-  } finally {
-    if (previousMode === undefined) {
-      delete process.env.NOTION_COLLAB_MODE;
-    } else {
-      process.env.NOTION_COLLAB_MODE = previousMode;
-    }
-  }
+test('customAgentMcpEnabled is on by default and can be disabled explicitly', () => {
+  assert.equal(customAgentMcpEnabled({}), true);
+  assert.equal(customAgentMcpEnabled({ CORTEX_MCP_ENABLE: '1' }), true);
+  assert.equal(customAgentMcpEnabled({ CORTEX_MCP_ENABLE: '0' }), false);
+  assert.equal(customAgentMcpEnabled({ CORTEX_MCP_ENABLE: 'false' }), false);
 });
 
 test('panghuPollerShouldRun requires a real sender by default', () => {
@@ -179,10 +146,7 @@ test('listManagedStackWatchFiles includes runtime code and config, but not execu
   assert.doesNotMatch(files.join('\n'), /docs\/projects\/execution\.md/);
 });
 
-test('notion collaboration defaults to custom_agent unless legacy polling is explicitly requested', () => {
+test('notion collaboration is fixed to custom_agent and never enables comment polling', () => {
   assert.equal(notionCollaborationMode({}), 'custom_agent');
-  assert.equal(notionCommentPollingEnabled({}), false);
-  assert.equal(notionCollaborationMode({ NOTION_COLLAB_MODE: 'legacy_polling' }), 'legacy_polling');
-  assert.equal(notionCommentPollingEnabled({ NOTION_COLLAB_MODE: 'legacy_polling' }), true);
-  assert.equal(notionCommentPollingEnabled({ NOTION_COMMENT_POLL_ENABLE: '1' }), true);
+  assert.equal(notionCollaborationMode({ NOTION_COLLAB_MODE: 'legacy_polling' }), 'custom_agent');
 });

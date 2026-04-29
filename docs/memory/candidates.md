@@ -1,3 +1,3 @@
-# Candidate Memory
+# 候选记忆
 
 - 暂无。

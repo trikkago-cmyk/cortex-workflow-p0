@@ -1,9 +1,29 @@
 # PRJ-cortex 执行文档
 
+## 2026-04-27 Custom Agent MCP 门面已落地并启动
+
+- 当前任务：把 `Notion Custom Agent` 的异步评论入口从“文档里的 REST 设想”推进成 Notion 可挂载的 MCP 工具入口。
+- 核心进展：1）已新增 `src/cortex-mcp-server.js`，暴露 `get_cortex_context / ingest_notion_comment / claim_next_command / submit_agent_receipt` 四个 MCP tools。2）已新增 `npm run mcp:server` 与 `npm run notion:custom-agent-mcp`。3）`automation:start/status/stop` 已纳管 `cortex-custom-agent-mcp`。4）当前本机进程已启动在 `http://127.0.0.1:19101/mcp`，`GET /health` 返回 `service=cortex-custom-agent-mcp`。5）本机 MCP client 已能列出 4 个工具并成功调用 `get_cortex_context` 读取 `PRJ-cortex` 上下文。6）临时公网 endpoint `https://gentle-windows-doubt.loca.lt/mcp` 已通过 MCP client 验证。7）MCP server 已支持可选 `CORTEX_MCP_BEARER_TOKEN` 鉴权。8）完整测试已通过，`npm test = 166 / 166`。
+- 本轮新增完成：新增 `test/cortex-mcp-server.test.js`，并更新 `docs/notion-custom-agent-router-checklist.md`、`docs/notion-custom-agents-collaboration.md`、`docs/notion-custom-agent-live-uat.md`，同步更新 Notion 页面 `自定义智能体协作` 与 `Router 配置清单`。
+- 🔴 红灯：无新的系统级红灯。当前阻塞不是 Cortex 侧代码，而是 Notion Custom Agent 需要配置公网 HTTPS MCP endpoint；Notion 云端不能直接访问本机 `127.0.0.1`。
+- 🟡 黄灯：还没在 Notion UI 真机跑 `green / yellow / red / self-loop / scope / receipt` 六个场景。
+- 🟢 已推进：Custom Agent 接入从“需要直接打 Cortex REST”改成“Notion Agent -> MCP tools -> Cortex REST 内核”，方向已经和 Custom Agent 机制对齐。
+- 下一步：1）在 Notion Custom Agent 里添加 MCP server：`https://gentle-windows-doubt.loca.lt/mcp`；2）跑六场景真机验收；3）如果临时 tunnel 不稳定，再换长期固定 relay。
+
+## 2026-04-27 Notion MCP 已重新连通，工作台净化视图已生效
+
+- 当前任务：恢复 Notion MCP 到当前 `Cortex` workspace，并把本地 `/dashboard` 的运行快照从“真实数据 + smoke 残留混合显示”收口成默认净化视图。
+- 核心进展：1）已完成 `codex mcp login notion`，当前 Codex 会话已能直接 fetch 新的 `Cortex` 根页面与子页面。2）`/dashboard` 已新增 `data_hygiene` 与 `include_synthetic` 机制，默认隐藏 smoke / 验收残留，只在需要时切换到完整原始视图。3）本地运行时已确认处于 `NOTION_COLLAB_MODE=custom_agent`，不再走 `notion-loop` 作为主路径。4）工作台、记忆页、执行页、自定义智能体协作页的 Notion 页面已重新进入可同步状态。5）当前全量测试已通过，`npm test` 为 `161 / 161` 通过。
+- 本轮新增完成：更新 `src/task-dashboard.js`、`test/task-dashboard.test.js`，并补充 `docs/red-yellow-green-operating-sop.md`、`docs/notion-custom-agent-live-uat.md` 作为当前异步协作与决策分流的主参考文档。
+- 🔴 红灯：无新的系统级红灯。当前剩余阻塞已经从“MCP 授权失败”收敛为“要在 Notion 侧继续完成 Custom Agent trigger / tool 的真机配置与联调”。
+- 🟡 黄灯：Notion MCP 已连通，但 `Notion Custom Agent` 的页面触发、self-loop guard、scope guard、receipt 回显还需要在目标工作区继续做一次真实联调。
+- 🟢 已推进：Notion 授权已恢复；运行快照默认不再混入测试残留；后续同步与联调可以直接在当前 workspace 继续推进。
+- 下一步：1）把本地主文档重新镜像到当前 Notion workspace；2）更新 Cortex 工作台各模块状态；3）开始跑 `green / yellow / red + receipt` 的 Custom Agent 真机验收。
+
 ## 2026-04-21 Notion Custom Agents 已成为异步协作主路径
 
 - 当前任务：把 Cortex 的 Notion 异步协作从“评论轮询”改成“Notion Custom Agents 原生触发”，让 `@mention` / comment trigger 成为主入口。
-- 核心进展：1）已新增 `docs/notion-custom-agents-collaboration.md`，明确 `Custom Agents` 为主路径、`notion-loop` 为 legacy fallback。2）Cortex server 已补 `GET /notion/custom-agent/context`，可直接给 Notion agent 提供项目 review / 协作契约。3）Cortex server 已补 `POST /webhook/notion-custom-agent`，可作为 Notion agent 的事件入口。4）automation 与 dev stack 已开始默认切换到 `custom_agent` 模式，只有显式 `legacy_polling` 才会继续拉起轮询。5）相关测试已补齐，确保默认模式不再依赖 `notion-loop`。
+- 核心进展：1）已新增 `docs/notion-custom-agents-collaboration.md`，明确 `Custom Agents` 为主路径，旧的 `notion-loop` 已退出默认 runtime。2）Cortex server 已补 `GET /notion/custom-agent/context`，可直接给 Notion agent 提供项目 review / 协作契约。3）Cortex server 已补 `POST /webhook/notion-custom-agent`，可作为 Notion agent 的事件入口。4）automation 与 dev stack 已默认切到 `custom_agent` 模式，不再拉起评论轮询。5）相关测试已补齐，确保默认模式不再依赖 `notion-loop`。
 - 本轮新增完成：新增 `src/notion-collaboration-mode.js`、`src/notion-comment-pages.js`，并更新 `src/server.js`、`scripts/automation-start.js`、`scripts/dev-stack.js`、`src/automation-processes.js`、`README.md`、`package.json`、相关测试与文档。
 - 🔴 红灯：Notion 工作区里还要做一次真机配置，把 Custom Agent trigger / tools 真正挂上去。
 - 🟡 黄灯：legacy polling 还保留兼容层，后续要逐步删掉或只在灰度期保留。
@@ -23,7 +43,7 @@
 ## 2026-04-14 本地红灯通知 + launchd 常驻托管已接通
 
 - 当前任务：把 P0 最卡的“红灯快速唤醒你”从外部 IM / tunnel 依赖切回本地能力，并把 Cortex 运行态变成这台 Mac 上可自启动、可自恢复的服务。
-- 核心进展：1）已经正式接入 `local_notification` 通道，红灯决策可直接走 macOS 系统通知，不再依赖胖虎代理。2）补了 `launchd:install / launchd:status / launchd:uninstall`，本地登录态下可定时执行 `automation:ensure`，持续兜底 `cortex-server / notion-loop / executor workers / local-notifier`。3）`automation:status / automation:stop` 已补项目 `.env.local` 自动加载，不会再出现明明本地通知已配置、状态脚本却看不见的错觉。4）`red-decision` 脚本已经适配本地通知通道，本地模式下不再强行要求 `session_id`。5）新增 `local:red-smoke`，可直接验证 `red decision -> outbox -> local-notifier -> sent` 的闭环。6）已完成真实验收：`automation:stop` 后等待约 20 秒，`launchd` 自动把整套栈重新拉起；恢复后再次触发红灯 smoke 仍然成功送达。
+- 核心进展：1）已经正式接入 `local_notification` 通道，红灯决策可直接走 macOS 系统通知，不再依赖胖虎代理。2）补了 `launchd:install / launchd:status / launchd:uninstall`，本地登录态下可定时执行 `automation:ensure`，持续兜底 `cortex-server / executor workers / local-notifier`。3）`automation:status / automation:stop` 已补项目 `.env.local` 自动加载，不会再出现明明本地通知已配置、状态脚本却看不见的错觉。4）`red-decision` 脚本已经适配本地通知通道，本地模式下不再强行要求 `session_id`。5）新增 `local:red-smoke`，可直接验证 `red decision -> outbox -> local-notifier -> sent` 的闭环。6）已完成真实验收：`automation:stop` 后等待约 20 秒，`launchd` 自动把整套栈重新拉起；恢复后再次触发红灯 smoke 仍然成功送达。
 - 本轮新增完成：新增 `src/launchd.js`、`scripts/launchd-install.js`、`scripts/launchd-status.js`、`scripts/launchd-uninstall.js`、`scripts/local-red-alert-smoke.js`，并同步更新 `README`、`.env.local`、`agent-registry` 与测试。
 - 🔴 红灯：无。`systemd` 在当前这台 `macOS 15.5` 机器上不可用，所以本轮已经直接改用本地原生 `launchd`，不再停在错误前提上空转。
 - 🟡 黄灯：短周期恢复已经验过，但还差更长时间的 `launchd` 稳定性观察，确认跨多轮异常退出后的恢复都稳定。
@@ -33,7 +53,7 @@
 ## 2026-04-14 评论 Direct Action 已接通到 Cortex 内核
 
 - 当前任务：把 `comment + suggestion + accept/reject` 从“对象和 API 已存在”推进到“Notion 评论里能直接触发 action”。
-- 核心进展：1）`agent-notion-worker` 已能识别结构化评论指令，直接执行 `suggestion accept/reject`、`memory accept/reject/followup`、`inbox resolve/snooze/archive/reopen`、`decision approve/improve/resolve/archive/retry`。2）`GET /inbox` 已支持 `source_ref` 过滤，direct action 后可以顺手收掉关联 review item，不再只改对象状态、却把 inbox 悬空。3）`executor-worker` 已兼容 `snake_case / camelCase` 结果字段，避免 handler 明明执行成功，却因为字段风格不一致而不回帖、不写完成摘要。4）多 agent executor 里的 shared action handler 也已绑定正确的 `fetchImpl / cortexBaseUrl`，不再误打默认 `19100`。5）已补端到端测试：`Notion comment -> router-owned command -> shared action -> Cortex object state update -> discussion reply`。
+- 核心进展：1）`agent-notion-worker` 已能识别结构化评论指令，直接执行 `suggestion accept/reject`、`memory accept/reject/followup`、`inbox resolve/snooze/archive/reopen`、`decision approve/improve/resolve/archive/retry`。2）`GET /inbox` 已支持 `source_ref` 过滤，direct action 后可以顺手收掉关联 review item，不再只改对象状态、却把 inbox 悬空。3）`executor-worker` 已兼容 `snake_case / camelCase` 结果字段，避免 handler 明明执行成功，却因为字段风格不一致而丢失完成摘要。4）多 agent executor 里的 shared action handler 也已绑定正确的 `fetchImpl / cortexBaseUrl`，不再误打默认 `19100`。5）已补端到端测试：`Notion comment -> router-owned command -> shared action -> Cortex object state update -> checkpoint / docs`。
 - 本轮新增完成：薄改 `src/executor-command-actions.js`、`src/executor-worker.js`、`src/executor-multi-agent-handler.js`、`src/store.js`、`src/server.js`，并补齐 `test/executor-command-actions.test.js`。
 - 🔴 红灯：无。
 - 🟡 黄灯：当前 direct action 仍然依赖结构化评论指令，例如 `[suggestion-accept: SUG-xxx]`；更自然语言的评论语义理解先不放进 P0。
@@ -98,7 +118,7 @@
 - 🔴 红灯：IM 推送正式链路仍未收口成单一、稳定、常驻、可运维的部署拓扑。
 - 🟡 黄灯：Notion 评论闭环与外部 agent 接入协议都已有代码和测试，但仍缺最终目标环境下的长期运行验证。
 - 🟢 已推进：完成仓库级状态审计；补齐 MVP 范围、验收边界和上线缺口；停止把“代码存在”误报为“已上线”。
-- 下一步：1）锁定唯一 IM 拓扑；2）把 `cortex-server / panghu-poller / notion-loop / executor workers` 拉成统一常驻服务；3）用真实 Notion 评论跑一次最终闭环验证。
+- 下一步：1）锁定唯一 IM 拓扑；2）把 `cortex-server / panghu-poller / executor workers` 拉成统一常驻服务；3）用真实 Notion 评论跑一次最终闭环验证。
 
 - 当前任务：把 Cortex server 迁到胖虎同侧网络运行，结束“我本机临时 server + tunnel”这条不稳定测试链路。
 - 核心进展：方向已经收敛。1）这轮验证说明长期正确方案不是继续修本机 tunnel，而是把 Cortex server 迁到你那边可被胖虎本地直连的环境。2）原因已经很明确：你那台机器出不了公网，DNS 解析外部域名失败，所以远端 poller 无法稳定访问我这边的 quick tunnel；反过来我这边也无法稳定访问你本地 `send-hi` 回环地址。3）因此当前的网络拓扑下，真正稳定的链路只有“Cortex server 和胖虎 poller 在同侧网络，本地 `127.0.0.1:19100` 直连”。4）作为收尾动作，我已经把遗留测试消息 `id=14`、`id=15` 标记为 `sent`，当前本地 outbox 已清空，不再留 pending 噪声。5）本地 `panghu-poller` 也已关闭，避免再抢消费远端要验证的 outbox。

@@ -2,8 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultAgentRegistryFile, deriveExecutorPoolFromAgentRegistry } from '../src/agent-registry.js';
-import { listNotionLoopProjects } from '../src/automation-processes.js';
-import { notionCollaborationMode, notionCommentPollingEnabled } from '../src/notion-collaboration-mode.js';
+import { notionCollaborationMode } from '../src/notion-collaboration-mode.js';
 import { buildExecutorWorkerEnv, loadExecutorPoolConfig } from '../src/executor-pool.js';
 import { loadProjectEnv } from '../src/project-env.js';
 
@@ -21,10 +20,8 @@ const sendFile = process.env.PANGHU_SEND_FILE || join(cwd, 'tmp/panghu-sent-mess
 const sendCommand = process.env.PANGHU_SEND_COMMAND || '';
 const sendUrl = process.env.PANGHU_SEND_URL || '';
 const sendToken = process.env.PANGHU_SEND_TOKEN || '';
-const notionApiKey = process.env.NOTION_API_KEY || '';
 const notionBaseUrl = process.env.NOTION_BASE_URL || '';
 const notionVersion = process.env.NOTION_VERSION || '';
-const notionLoopIntervalMs = String(process.env.LOOP_INTERVAL_MS || 3000);
 const notionCollabMode = notionCollaborationMode(process.env);
 const projectIndexDatabaseId = process.env.NOTION_PROJECT_INDEX_DATABASE_ID || '';
 const executorEnabled = process.env.EXECUTOR_ENABLE === '1';
@@ -94,7 +91,6 @@ const server = spawnProcess('cortex-server', ['src/server.js'], {
 });
 
 let poller;
-let notionLoops = [];
 let executorStub;
 let executorWorker;
 let executorWorkers = [];
@@ -110,9 +106,6 @@ function shutdown(signal = 'SIGTERM') {
     worker.kill(signal);
   }
   executorStub?.kill(signal);
-  for (const notionLoop of notionLoops) {
-    notionLoop.kill(signal);
-  }
   poller?.kill(signal);
   server.kill(signal);
 }
@@ -131,25 +124,6 @@ try {
     PANGHU_SEND_URL: sendUrl,
     PANGHU_SEND_TOKEN: sendToken,
   });
-
-  if (notionApiKey && notionCommentPollingEnabled(process.env)) {
-    notionLoops = listNotionLoopProjects({
-      cwd,
-      dbPath,
-      defaultProjectId: process.env.CORTEX_DEFAULT_PROJECT_ID || 'PRJ-cortex',
-    }).map((project) =>
-      spawnProcess(`notion-loop:${project.projectId}`, ['scripts/notion-loop.js'], {
-        CORTEX_BASE_URL: baseUrl,
-        NOTION_API_KEY: notionApiKey,
-        NOTION_BASE_URL: notionBaseUrl,
-        NOTION_VERSION: notionVersion,
-        LOOP_INTERVAL_MS: notionLoopIntervalMs,
-        NOTION_PROJECT_INDEX_DATABASE_ID: projectIndexDatabaseId,
-        PROJECT_ID: project.projectId,
-        ...(project.name ? { PROJECT_NAME: project.name } : {}),
-      }),
-    );
-  }
 
   if (
     executorEnabled &&
@@ -171,7 +145,6 @@ try {
       ? deriveExecutorPoolFromAgentRegistry(agentRegistryFile, {
           fallbackWebhookUrl: executorWebhookUrl,
           fallbackWebhookToken: executorWebhookToken,
-          notionApiKey,
           notionBaseUrl,
           notionVersion,
         })
@@ -185,7 +158,6 @@ try {
           routingFile: worker.routingFile,
           webhookUrl: worker.webhookUrl || executorWebhookUrl,
           webhookToken: worker.webhookToken || executorWebhookToken,
-          notionApiKey: worker.notionApiKey || notionApiKey,
           notionBaseUrl: worker.notionBaseUrl || notionBaseUrl,
           notionVersion: worker.notionVersion || notionVersion,
         }),
@@ -204,7 +176,6 @@ try {
       EXECUTOR_WEBHOOK_URL: executorWebhookUrl,
       EXECUTOR_WEBHOOK_TOKEN: executorWebhookToken,
       EXECUTOR_POLL_INTERVAL_MS: executorPollIntervalMs,
-      NOTION_API_KEY: notionApiKey,
       NOTION_BASE_URL: notionBaseUrl,
       NOTION_VERSION: notionVersion,
     });
@@ -212,15 +183,7 @@ try {
 
   console.log(`[dev-stack] cortex ready at ${baseUrl}`);
   console.log(`[dev-stack] panghu sender mode: ${sendMode}`);
-  console.log(
-    `[dev-stack] notion collaboration: ${notionCollabMode}${
-      notionApiKey && notionCommentPollingEnabled(process.env)
-        ? ' (legacy notion-loop enabled)'
-        : notionApiKey
-          ? ' (custom agent mode, no poller)'
-          : ' (NOTION_API_KEY unset)'
-    }`,
-  );
+  console.log(`[dev-stack] notion collaboration: ${notionCollabMode}`);
   console.log(
     `[dev-stack] executor worker: ${
       executorEnabled

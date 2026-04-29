@@ -56,7 +56,6 @@ test('loadExecutorPoolConfig applies defaults and normalizes worker settings', (
     routingFile: './docs/executor-routing.json',
     webhookUrl: null,
     webhookToken: null,
-    notionApiKey: null,
     notionBaseUrl: null,
     notionVersion: null,
     extraEnv: {},
@@ -78,7 +77,6 @@ test('buildExecutorWorkerEnv converts normalized worker config into process env'
     routingFile: './docs/executor-routing.json',
     webhookUrl: 'http://127.0.0.1:3010/handle',
     webhookToken: 'token',
-    notionApiKey: 'secret',
     notionBaseUrl: 'https://api.notion.com',
     notionVersion: '2026-03-11',
     extraEnv: {
@@ -93,7 +91,6 @@ test('buildExecutorWorkerEnv converts normalized worker config into process env'
   assert.equal(env.EXECUTOR_ROUTING_FILE, './docs/executor-routing.json');
   assert.equal(env.EXECUTOR_WEBHOOK_URL, 'http://127.0.0.1:3010/handle');
   assert.equal(env.EXECUTOR_WEBHOOK_TOKEN, 'token');
-  assert.equal(env.NOTION_API_KEY, 'secret');
   assert.equal(env.FOO, 'bar');
 });
 
@@ -185,8 +182,6 @@ test('executor pool config supports router worker for unassigned and dedicated w
     onlyUnassigned: routerWorkerConfig.onlyUnassigned,
     includeUnassigned: routerWorkerConfig.includeUnassigned,
     mode: 'echo',
-    notionApiKey: 'test-notion-key',
-    notionReply: async () => ({ id: 'reply-router-001' }),
     logger: { info() {}, error() {} },
   });
 
@@ -198,8 +193,6 @@ test('executor pool config supports router worker for unassigned and dedicated w
     onlyUnassigned: pmWorkerConfig.onlyUnassigned,
     includeUnassigned: pmWorkerConfig.includeUnassigned,
     mode: 'echo',
-    notionApiKey: 'test-notion-key',
-    notionReply: async () => ({ id: 'reply-pm-001' }),
     logger: { info() {}, error() {} },
   });
 

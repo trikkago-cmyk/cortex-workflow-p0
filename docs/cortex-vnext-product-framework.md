@@ -560,7 +560,7 @@ Connect 不是“协议说明页”。
 - 评论扫描与路由
 - candidate memory 提炼
 - Timeline 记录
-- 执行结果回帖
+- 执行结果回执 / 协作面回显
 - yellow item 入 inbox
 
 需要升级人工：

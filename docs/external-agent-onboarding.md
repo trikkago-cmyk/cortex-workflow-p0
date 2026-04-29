@@ -2,10 +2,65 @@
 
 目标：
 
-- 让其他工程里的 agent 复用同一套 `Notion 评论 -> Cortex -> agent 执行 -> 原 discussion 回帖` 工作流
+- 让其他工程里的 agent 复用同一套 `Notion 评论 -> Cortex -> agent 执行 -> receipt / checkpoint 回流` 工作流
 - 支持长任务用 `handoff + receipt` 双向回执，不要求所有 agent 都同步阻塞执行
 - 不手改多份 JSON
 - 接入动作尽量收敛成一次注册
+
+## 最快灰度验收
+
+如果你现在只想确认“这条接入链路是不是活的”，先直接跑 smoke，不要一上来手配很多文件。
+
+### 同步 webhook 模式 smoke
+
+```bash
+npm run agent:onboarding-smoke -- \
+  --mode sync \
+  --base-url http://127.0.0.1:19100 \
+  --project PRJ-cortex-gray-sync \
+  --agent agent-gray-sync \
+  --alias gray-sync
+```
+
+这条会自动完成：
+
+- 创建 / upsert 灰度 project
+- 通过 Connect API 注册 agent
+- 做 `/connect/agents/:agent/verify`
+- 模拟一条 Notion comment ingress
+- 用真实 executor worker 领取并执行命令
+- 校验 command 最终为 `done`
+
+### `handoff + receipt` 模式 smoke
+
+```bash
+npm run agent:onboarding-smoke -- \
+  --mode handoff \
+  --base-url http://127.0.0.1:19100 \
+  --project PRJ-cortex-gray-handoff \
+  --agent agent-gray-handoff \
+  --alias gray-handoff
+```
+
+这条会额外继续验证：
+
+- external handoff outbox 已生成
+- `callback_url` 已回传
+- `/webhook/agent-receipt` 可正常回执
+- receipt / checkpoint 已落库
+
+建议把这两个灰度 agent 保留成 canary，不要每次都用临时随机名字。
+
+注意：
+
+- Connect API 只负责注册路由和配置，不会立刻替你重启当前自动化栈。
+- 如果你刚新增了 agent，又希望本机马上开始 claim 这类任务，请补一条：
+
+```bash
+npm run automation:ensure
+```
+
+- 如果本机已经装了 `launchd`，也可以直接等下一轮 `automation:ensure` 自动触发。
 
 ## Connect API
 
@@ -127,7 +182,7 @@ curl -X POST http://127.0.0.1:19100/connect/agents/agent-search/verify \
 语义：
 
 - Cortex 会把这次返回直接视为命令完成
-- 如果原命令来自 Notion 评论，`reply_text` 会直接回到原 discussion
+- 如果原命令来自 Notion 评论，`reply_text` 会进入 `receipt / checkpoint`，供 Notion 协作面决定如何回显
 
 ## 模式 B：handoff + receipt 双向回执模式
 
@@ -267,7 +322,7 @@ bash hooks/task-complete.sh \
 - 更新原 command 的 `result_summary`
 - 更新 `receipt_count / last_receipt_at`
 - 新增 1 条 checkpoint
-- 如果原任务来自 Notion 评论，自动回到原 discussion
+- 如果原任务来自 Notion 评论，`reply_text` 会进入 `receipt / checkpoint`，由 Notion 协作面原生回显
 - 如果 `signal=red` 且 payload 里带 `decision_context`，自动升级成 red decision
 
 ## 一键注册
@@ -323,7 +378,7 @@ npm run automation:ensure
 
 ## 当前边界
 
-- 外部 agent 接入后，评论路由、Commands、回帖、Review 收口都能复用
+- 外部 agent 接入后，评论路由、Commands、receipt / checkpoint、Review 收口都能复用
 - 同步 webhook 模式更简单，适合短任务
 - `handoff + receipt` 模式更适合企业 IM / 长任务 / 多系统协作
 - 如果要支持更复杂的角色语义，例如专属 `planner / evaluator` 自动产出结构化 checkpoint，需要 agent 自己在 webhook handler 里遵守这套结果协议，或继续扩展 Cortex 内建 handler

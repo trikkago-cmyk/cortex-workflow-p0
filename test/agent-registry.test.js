@@ -78,7 +78,6 @@ test('loadAgentRegistry normalizes agents and derives direct webhook routes', ()
     routingFile: null,
     webhookUrl: null,
     webhookToken: null,
-    notionApiKey: null,
     notionBaseUrl: null,
     notionVersion: null,
     extraEnv: {},
@@ -198,8 +197,6 @@ test('executor worker can route via agent registry without executor-routing.json
     source: 'notion_comment',
     mode: 'webhook',
     agentRegistryFile: registryFile,
-    notionApiKey: 'test-notion-key',
-    notionReply: async () => ({ id: 'reply-registry-route' }),
     logger: { info() {}, error() {} },
   });
 

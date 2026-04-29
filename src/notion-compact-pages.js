@@ -112,7 +112,11 @@ function buildEntryLinks(project = {}) {
   const reviewPageUrl = notionPageUrlFromId(project.notion_review_page_id || project.notionReviewPageId);
   const executionPageUrl = notionPageUrlFromId(project.notion_scan_page_id || project.notionScanPageId);
   const memoryPageUrl = notionPageUrlFromId(project.notion_memory_page_id || project.notionMemoryPageId);
-  return [reviewPageUrl ? `工作台：${reviewPageUrl}` : null, executionPageUrl ? `执行文档：${executionPageUrl}` : null, memoryPageUrl ? `记忆页：${memoryPageUrl}` : null]
+  return [
+    reviewPageUrl ? `工作台：${reviewPageUrl}` : null,
+    executionPageUrl ? `执行文档：${executionPageUrl}` : null,
+    memoryPageUrl ? `记忆库：${memoryPageUrl}` : null,
+  ]
     .filter(Boolean)
     .join('；');
 }
@@ -131,7 +135,7 @@ export function buildCompactReviewMarkdown({
   const entryLinks = buildEntryLinks(project);
 
   return [
-    `# ${(project.name || project.project_id || project.projectId || 'Project').trim()} 工作台`,
+    `# ${(project.name || project.project_id || project.projectId || '项目').trim()} 工作台`,
     '',
     `- 当前任务：${summarize(boardData.currentTask, 100)}`,
     `- 核心进展：${summarize(boardData.currentProgress, 140)}`,
@@ -165,7 +169,7 @@ export function buildCompactExecutionMarkdown({
   const sections = parseLevel2Sections(executionMarkdown).slice(0, maxSections);
 
   return [
-    `# ${(project.name || project.project_id || project.projectId || 'Project').trim()} 执行文档`,
+    `# ${(project.name || project.project_id || project.projectId || '项目').trim()} 执行文档`,
     '',
     `- 当前任务：${summarize(boardData.currentTask, 100)}`,
     `- 当前进展：${summarize(boardData.currentProgress, 140)}`,
@@ -185,17 +189,17 @@ export function buildCompactExecutionMarkdown({
 
 export function buildProjectMemoryLandingMarkdown({ project = {}, globalMemoryUrl = null } = {}) {
   return [
-    `# ${(project.name || project.project_id || project.projectId || 'Project').trim()} Memory Scope`,
+    `# ${(project.name || project.project_id || project.projectId || '项目').trim()} 项目记忆`,
     '',
-    '- 本页不再承载独立的长期 memory 正文。',
-    '- Base Memory / Knowledge 已统一收敛到全局 Cortex Memory Hub。',
-    '- 当前项目只贡献 Timeline 事实和 Candidate Memory，由全局 memory pipeline 汇总治理。',
-    globalMemoryUrl ? `- 全局 Memory Hub：${globalMemoryUrl}` : null,
+    '- 本页承载当前项目的协作约定、局部知识和项目里程碑。',
+    '- 项目级记忆不会自动并入全局长期记忆中心。',
+    '- 只有经过 review 提升后，相关条目才会进入全局 Base / Knowledge / Timeline。',
+    globalMemoryUrl ? `- 全局记忆总览：${globalMemoryUrl}` : null,
     '',
     '## 说明',
     '',
-    '- 需要 review 的 memory 看全局 candidate memory 队列。',
-    '- 需要项目事实时，看本项目执行文档与 checkpoint。',
+    '- 需要跨项目复用的稳定规则，查看全局记忆总览。',
+    '- 需要项目内协作约定、局部知识和里程碑，查看本页与本项目执行文档。',
     '',
   ]
     .filter(Boolean)

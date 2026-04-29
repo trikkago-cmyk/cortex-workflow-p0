@@ -83,15 +83,15 @@ export function defaultMemoryMarkdown({ projectId, projectName } = {}) {
 
   return `# ${resolvedProjectName} 协作记忆
 
-## Base Memory
+## Base Memory（基础记忆）
 
 - 暂无稳定记忆。
 
-## Timeline
+## Timeline（时间线）
 
 - 项目已初始化，等待首个稳定 checkpoint。
 
-## Knowledge
+## Knowledge（知识）
 
 - 暂无沉淀知识。
 

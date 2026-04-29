@@ -1,6 +1,6 @@
 # Notion Custom Agent Router Checklist
 
-最近更新：2026-04-23
+最近更新：2026-04-27
 
 ## 目标
 
@@ -26,10 +26,17 @@ P0 目标是先把这条主链路打通：
 2. 两个触发器
    - `The agent is mentioned in a page or comment`
    - `A comment is added to a page`
-3. 两个核心接口
-   - `GET /notion/custom-agent/context`
-   - `POST /webhook/notion-custom-agent`
-4. 一个固定项目 id
+3. 一个 Custom Agent 可挂载的 MCP 工具入口
+   - MCP endpoint：`/mcp`
+   - 本地启动脚本：`npm run mcp:server`
+   - 默认本地地址：`http://127.0.0.1:19101/mcp`
+   - Notion 侧必须使用公网 HTTPS 地址，不能直接使用 `127.0.0.1`
+4. 四个最小 MCP tools
+   - `get_cortex_context`
+   - `ingest_notion_comment`
+   - `claim_next_command`
+   - `submit_agent_receipt`
+5. 一个固定项目 id
    - `PRJ-cortex`
 
 P0 不要求：
@@ -48,6 +55,10 @@ P0 不要求：
 - 至少能请求：
   - `GET /notion/custom-agent/context?project_id=PRJ-cortex`
   - `POST /webhook/notion-custom-agent`
+- Cortex Custom Agent MCP 本地可访问
+- 至少能请求：
+  - `GET /health`
+  - `POST /mcp`
 
 ### 2. 项目页面范围已配置
 
@@ -72,13 +83,71 @@ P0 不要求：
 
 - `NOTION_COLLAB_MODE=custom_agent`
 - 不依赖 `NOTION_API_KEY`
-- 不默认启动 `notion-loop`
+- 不存在并行的 `notion-loop` 轮询主链路
 
-只有在你明确做 legacy 兼容时，才需要：
+## Cortex MCP 门面
 
-- `NOTION_WRITE_MODE=legacy_api`
+Notion Custom Agent 不应该直接调用本机 `127.0.0.1:19100` REST API。  
+正式接入方式是让 Notion 调用一个公网 HTTPS MCP endpoint，再由这个 MCP 门面转发到本地 Cortex REST 内核。
+
+```mermaid
+flowchart LR
+  A["Notion Custom Agent"] --> B["Public HTTPS MCP endpoint"]
+  B --> C["cortex-custom-agent-mcp :19101"]
+  C --> D["Cortex API :19100"]
+  D --> E["SQLite + Markdown source of truth"]
+```
+
+本地启动：
+
+```bash
+npm run mcp:server
+```
+
+如果需要给 Notion 访问，需要把 `19101` 暴露成公网 HTTPS。临时联调用 tunnel，长期建议部署一个固定的 relay / MCP facade。
+
+临时 tunnel 启动时建议：
+
+```bash
+CORTEX_MCP_HOST=0.0.0.0 npm run mcp:server
+```
+
+如果启用了 host header 白名单，需要把 tunnel 域名加入：
+
+```bash
+CORTEX_MCP_ALLOWED_HOSTS=your-tunnel-domain.example.com npm run mcp:server
+```
+
+公网暴露时建议启用 Bearer 鉴权：
+
+```bash
+CORTEX_MCP_BEARER_TOKEN=replace-with-secret npm run mcp:server
+```
+
+Notion Custom Agent 侧连接 MCP server 时同步配置：
+
+- Header：`Authorization`
+- Value：`Bearer replace-with-secret`
+
+MCP tools 与 Cortex 内核映射：
+
+| MCP tool | Cortex REST 内核 | 用途 |
+|---|---|---|
+| `get_cortex_context` | `GET /notion/custom-agent/context` | 读取项目态、红黄绿规则、scope guard、loop guard |
+| `ingest_notion_comment` | `POST /webhook/notion-custom-agent` | 把 Notion 评论/mention 变成 command、decision_request 或 ignored |
+| `claim_next_command` | `POST /commands/claim-next` | Router 或下游 agent 领取下一条任务 |
+| `submit_agent_receipt` | `POST /webhook/agent-receipt` | 写入执行进展、完成回执、失败回执或红黄灯信号 |
 
 ## Notion 侧配置清单
+
+### 0. 官方前置权限
+
+Notion 侧需要先允许 Custom MCP server：
+
+- workspace owner 或有权限的 admin 需要在 Notion AI / AI connectors 里开启 Custom MCP servers。
+- 在 Custom Agent 的 Tools & Access 里添加 `Custom MCP server`。
+- MCP URL 填公网 HTTPS endpoint，例如 `https://gentle-windows-doubt.loca.lt/mcp`。
+- 如果开启 `CORTEX_MCP_BEARER_TOKEN`，在 Notion 连接里配置 `Authorization: Bearer <token>`。
 
 ### 1. 创建 Agent
 
@@ -86,6 +155,21 @@ P0 不要求：
 
 - Name: `Cortex Router`
 - Role: Router / triage / async collaboration entrypoint
+
+### 1.1 连接 MCP 工具
+
+给 `Cortex Router` 添加 MCP server：
+
+- Transport：Streamable HTTP
+- URL：公网 HTTPS 地址，例如 `https://your-domain.example.com/mcp`
+- 本地直连地址 `http://127.0.0.1:19101/mcp` 只能给本机 MCP client 测试，Notion 云端无法访问
+
+连接后确认可见 4 个 tools：
+
+- `get_cortex_context`
+- `ingest_notion_comment`
+- `claim_next_command`
+- `submit_agent_receipt`
 
 ### 2. 打开触发器
 
@@ -106,9 +190,9 @@ P0 不要求：
 推荐职责：
 
 1. 读取当前 page、block、discussion、comment 上下文
-2. 调 `GET /notion/custom-agent/context?project_id=PRJ-cortex`
+2. 调 MCP tool `get_cortex_context`
 3. 判断当前事件是 `green` / `yellow` / `red`
-4. 调 `POST /webhook/notion-custom-agent` 把事件写回 Cortex
+4. 调 MCP tool `ingest_notion_comment` 把事件写回 Cortex
 5. 根据 Cortex 返回结果决定：
    - `command`：继续执行或等待下游 agent
    - `decision_request`：在 Notion 里说明已进入 review / decision
@@ -123,9 +207,9 @@ You are Cortex Router, the single async collaboration entrypoint for Cortex in N
 
 Your job:
 1. Read the current page, discussion, and comment context.
-2. Fetch project context from GET /notion/custom-agent/context?project_id=PRJ-cortex.
+2. Fetch project context with the MCP tool get_cortex_context.
 3. Classify the event as green, yellow, or red.
-4. POST the event to /webhook/notion-custom-agent.
+4. Send the event to Cortex with the MCP tool ingest_notion_comment.
 5. Continue collaboration in the same Notion discussion when the event is green or yellow.
 6. Stop execution escalation when the event is red and let Cortex trigger the human notification path.
 
@@ -142,16 +226,16 @@ Rules:
 
 Phase 1 只开放最小工具集：
 
-- `GET /notion/custom-agent/context`
-- `POST /webhook/notion-custom-agent`
-- `POST /commands/claim-next`
-- `POST /webhook/agent-receipt`
+- `get_cortex_context`
+- `ingest_notion_comment`
+- `claim_next_command`
+- `submit_agent_receipt`
 
 如果 Notion 侧工具管理支持备注，请写清：
 
 - `context` 只负责读项目态
-- `webhook/notion-custom-agent` 只负责写入事件
-- `claim-next` 和 `agent-receipt` 是下游执行链路，不是 Router 每次都要直接调用
+- `ingest_notion_comment` 只负责写入事件
+- `claim_next_command` 和 `submit_agent_receipt` 是下游执行链路，不是 Router 每次都要直接调用
 
 ## 事件载荷模板
 

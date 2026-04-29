@@ -80,12 +80,13 @@ test('buildCompactExecutionMarkdown keeps only compact sections and checkpoint s
   assert.match(markdown, /其余 1 行已折叠/);
 });
 
-test('buildProjectMemoryLandingMarkdown points project memory pages back to global hub', () => {
+test('buildProjectMemoryLandingMarkdown keeps project memory independent while linking back to global hub', () => {
   const markdown = buildProjectMemoryLandingMarkdown({
     project: { name: 'Dark Luxury Itinerary' },
     globalMemoryUrl: 'https://www.notion.so/3430483f51e8812bb907ff67194fac84',
   });
 
-  assert.match(markdown, /Dark Luxury Itinerary Memory Scope/);
-  assert.match(markdown, /全局 Memory Hub/);
+  assert.match(markdown, /Dark Luxury Itinerary 项目记忆/);
+  assert.match(markdown, /项目级记忆不会自动并入全局长期记忆中心/);
+  assert.match(markdown, /全局记忆总览/);
 });

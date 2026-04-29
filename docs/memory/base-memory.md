@@ -1,7 +1,7 @@
-# Base Memory
+# Base Memory（基础记忆）
 
 - 作用：沉淀稳定协作偏好、原则、规则。
-- 来源：当前 durable base memory + 已有协作基线文本。
+- 来源：当前长期 base memory + 已有协作基线文本。
 
 ## 当前基线
 
@@ -200,6 +200,6 @@ Notion 是共享 review 面板，不是分叉的第二份真相。
 - 新偏好优先修订已有原则，不堆重复 bullet。
 - 只记录稳定、可复用、会影响未来 agent 行为的规则。
 
-## 结构化 Durable Items
+## 结构化长期条目
 
 - 暂无。

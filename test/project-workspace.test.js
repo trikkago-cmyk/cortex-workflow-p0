@@ -36,4 +36,7 @@ test('ensureProjectWorkspace creates per-project files for non-legacy projects',
   assert.equal(existsSync(paths.memoryPath), true);
   assert.match(readFileSync(paths.executionDocPath, 'utf8'), /Dark Luxury Itinerary 执行文档/);
   assert.match(readFileSync(paths.memoryPath, 'utf8'), /Dark Luxury Itinerary 协作记忆/);
+  assert.match(readFileSync(paths.memoryPath, 'utf8'), /Base Memory（基础记忆）/);
+  assert.match(readFileSync(paths.memoryPath, 'utf8'), /Timeline（时间线）/);
+  assert.match(readFileSync(paths.memoryPath, 'utf8'), /Knowledge（知识）/);
 });

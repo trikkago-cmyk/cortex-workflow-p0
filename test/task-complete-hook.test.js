@@ -63,17 +63,11 @@ async function runHook(args, env = {}) {
   });
 }
 
-test('task-complete hook reports green completion, replies to notion, and dedupes on retry', async (t) => {
-  const replies = [];
+test('task-complete hook reports green completion without local token writeback and dedupes on retry', async (t) => {
   const dbDir = mkdtempSync(join(tmpdir(), 'cortex-task-complete-hook-green-'));
   const app = createCortexServer({
     dbPath: join(dbDir, 'cortex.db'),
     clock: () => new Date('2026-04-02T11:00:00.000Z'),
-    notionApiKey: 'test-notion-key',
-    notionReply: async ({ discussionId, text }) => {
-      replies.push({ discussionId, text });
-      return { id: 'reply-hook-green-001' };
-    },
   });
 
   await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
@@ -123,7 +117,8 @@ test('task-complete hook reports green completion, replies to notion, and dedupe
     processed_count: 2,
     success_count: 2,
   });
-  assert.equal(firstRun.body.reply_id, 'reply-hook-green-001');
+  assert.equal(firstRun.body.reply_id, null);
+  assert.equal(firstRun.body.notion_feedback_mode, 'docs_only');
 
   const receipts = await getJson(baseUrl, `/receipts?command_id=${encodeURIComponent(ingested.body.commandId)}`);
   assert.equal(receipts.status, 200);
@@ -147,12 +142,6 @@ test('task-complete hook reports green completion, replies to notion, and dedupe
 
   const receiptsAfterRetry = await getJson(baseUrl, `/receipts?command_id=${encodeURIComponent(ingested.body.commandId)}`);
   assert.equal(receiptsAfterRetry.body.receipts.length, 1);
-  assert.deepEqual(replies, [
-    {
-      discussionId: 'discussion-hook-green',
-      text: '胖虎已完成这条任务并回到评论里。',
-    },
-  ]);
 });
 
 test('task-complete hook can escalate red alerts into decisions', async (t) => {

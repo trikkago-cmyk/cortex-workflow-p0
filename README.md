@@ -36,8 +36,12 @@ This repository is a P0 alpha. The backend runtime, SQLite truth source, multi-a
 Still being finalized:
 
 - Real workspace setup for Notion Custom Agent triggers and tool connections.
-- Longer-running `launchd + local_notification` stability validation.
-- A repeatable onboarding SOP for connecting additional external agents.
+- Longer-running `launchd + local_notification` soak observation.
+
+Operational hardening already in place:
+
+- `runtime:readiness` now returns `ready` on the local `PRJ-cortex` runtime after backlog cleanup.
+- Historical smoke residue can be archived through `npm run runtime:cleanup -- --project PRJ-cortex --max-age-hours 24`.
 
 ## Key Docs
 
@@ -55,13 +59,11 @@ cd /path/to/cortex-workflow-p0
 npm start
 ```
 
-一键拉起 Cortex + 胖虎本地轮询（legacy）：
+一键拉起 Cortex 本地运行栈：
 
 ```bash
 npm run dev:stack
 ```
-
-如果环境里有 `NOTION_API_KEY`，且显式选择 `NOTION_COLLAB_MODE=legacy_polling`，`dev:stack` 才会自动一起拉起 `notion:loop`。
 
 如果要跑完整协作骨架，默认只需要两条进程：
 
@@ -99,13 +101,7 @@ npm run automation:start
 
 这会额外拉起 `local-notifier`，把 `red decision` 从 outbox 直接投递到 macOS 通知中心。
 
-如果你确实还要保留“本地进程主动用 Notion API 写 review / memory / execution / project index”的旧镜像链路，必须显式开启：
-
-```bash
-NOTION_WRITE_MODE=legacy_api
-```
-
-默认主路径已经切到 `Custom Agent + MCP`，即使环境里有 `NOTION_API_KEY`，本地执行链路也不会再自动把 Notion 当成主动推送目标。
+默认主路径已经切到 `Custom Agent + MCP`。本地执行链路不会再自动把 Notion 当成主动推送目标，也不会再由本地 token 回写 discussion；`NOTION_API_KEY` 相关脚本只保留给迁移、回填或临时镜像使用。
 
 要把它做成本地开机自启，用 `launchd`，不要用 `systemd`：
 
@@ -156,7 +152,6 @@ PANGHU_ALLOW_DRY_RUN=1 npm run automation:start
 这会起：
 
 - `executor-multi-agent-handler`
-- `notion-loop`
 - `executor-worker-agent-router`
 - `executor-worker-agent-notion-worker`
 - `executor-worker-agent-pm`
@@ -188,6 +183,35 @@ npm run automation:status
 
 `automation:status` 里会直接显示 `panghu-poller` 的 sender 状态，方便判断当前是 `real sender` 还是 `dry-run`。
 
+快速做一轮本地运行态体检：
+
+```bash
+npm run runtime:readiness -- --samples 3 --interval-ms 5000
+```
+
+如果想把本地红灯通知也一起验掉：
+
+```bash
+npm run runtime:readiness -- --samples 3 --interval-ms 5000 --red-smoke
+```
+
+如果要把历史 smoke / 验收残留从 readiness backlog 里安全归档：
+
+```bash
+npm run runtime:cleanup -- --project PRJ-cortex --max-age-hours 24
+```
+
+真正执行归档时再加 `--apply`。
+
+这个脚本会汇总：
+
+- `automation:status`
+- `/health`
+- `launchd:status`
+- 最近 failed command / failed outbox / pending outbox
+- 最近 receipt
+- 当前待拍板 red decision
+
 如果只是临时托底，才用本地 stub：
 
 ```bash
@@ -211,6 +235,37 @@ npm test
 ```bash
 npm run executor:smoke
 ```
+
+外部 Agent 接入灰度验收：
+
+```bash
+npm run agent:onboarding-smoke -- \
+  --mode sync \
+  --base-url http://127.0.0.1:19100 \
+  --project PRJ-cortex-gray-sync \
+  --agent agent-gray-sync \
+  --alias gray-sync
+```
+
+如果要验 `handoff + receipt` 双向回执：
+
+```bash
+npm run agent:onboarding-smoke -- \
+  --mode handoff \
+  --base-url http://127.0.0.1:19100 \
+  --project PRJ-cortex-gray-handoff \
+  --agent agent-gray-handoff \
+  --alias gray-handoff
+```
+
+第二条命令会完整验证：
+
+- Connect onboarding
+- network health verify
+- Notion comment -> command ingest
+- external webhook handoff
+- `agent-receipt` 回写
+- checkpoint / receipt 落库
 
 把 review / execution / project index 一次性同步到 Notion：
 
@@ -509,7 +564,7 @@ bash hooks/task-complete.sh \
 1. `claim-next`
 2. `start`
 3. 调 handler 执行
-4. 如果是 Notion comment 且 handler 返回 `reply_text`，就回复同一条 discussion
+4. 如果 handler 返回 `reply_text`，就把它作为协作回显文案写进 `receipt / checkpoint`
 5. `complete` 或 `failed`
 
 支持两种模式：
@@ -584,8 +639,6 @@ webhook handler 会收到：
 如果要直接拉起真实多 agent handler + worker 池：
 
 ```bash
-NOTION_API_KEY=secret_xxx \
-NOTION_PROJECT_INDEX_DATABASE_ID=e33fca4a-f7dc-4d79-8c44-9a670a2fc83f \
 NOTIFICATION_CHANNEL=hiredcity \
 NOTIFICATION_TARGET=your-target@example.com \
 npm run automation:start
@@ -594,7 +647,6 @@ npm run automation:start
 这会同时起：
 
 - `executor-multi-agent-handler`
-- `notion-loop`
 - `executor-worker-agent-router`
 - `executor-worker-agent-notion-worker`
 - `executor-worker-agent-pm`
@@ -612,8 +664,6 @@ npm run executor:stub
 如果要直接起多 agent 常驻 worker 池：
 
 ```bash
-NOTION_API_KEY=secret_xxx \
-NOTION_PROJECT_INDEX_DATABASE_ID=e33fca4a-f7dc-4d79-8c44-9a670a2fc83f \
 EXECUTOR_ENABLE=1 \
 EXECUTOR_POOL_ENABLE=1 \
 EXECUTOR_POOL_FILE=./docs/executor-workers.json \
@@ -662,34 +712,26 @@ handler 只需要返回：
   "ok": true,
   "status": "done",
   "reply_text": "已处理，我把这一段重新压缩了。",
-  "result_summary": "PRD 段落已收紧并回复评论"
+  "result_summary": "PRD 段落已收紧，结果已写入 checkpoint"
 }
 ```
 
-如果要一键验证 “Notion discussion -> Cortex command -> agent reply -> command done” 的闭环：
+如果要验证 `Notion Custom Agent -> Cortex command -> receipt / checkpoint` 的闭环，优先按 [docs/notion-custom-agent-router-checklist.md](/Users/yusijua/Desktop/cortex-workflow-p0/docs/notion-custom-agent-router-checklist.md) 逐步联调。
+
+也可以直接手动模拟一条 Notion Custom Agent 事件：
 
 ```bash
-NOTION_API_KEY=secret_xxx PROJECT_ID=PRJ-cortex npm run notion:smoke
-```
-
-这个 smoke 会创建一条 page-level comment，再显式 ingest 成 `notion_comment` command。
-这样做是因为常驻 `notion:loop` 会主动跳过 integration 自己写的评论，避免 agent 自己和自己来回对话。
-
-模拟一条 Notion 评论回流：
-
-```bash
-curl -X POST http://127.0.0.1:19100/webhook/notion-comment \
+curl -X POST http://127.0.0.1:19100/webhook/notion-custom-agent \
   -H 'Content-Type: application/json' \
   -d '{
     "project_id": "PRJ-cortex",
-    "target_type": "milestone",
-    "target_id": "M-20260324-review",
     "page_id": "page-001",
     "discussion_id": "discussion-001",
     "comment_id": "comment-001",
-    "body": "[improve: 把红灯事项摘要再压短一点]",
-    "context_quote": "旧摘要太长",
-    "anchor_block_id": "block-001"
+    "body": "@Cortex Router 把当前 P0 阻塞整理后继续推进",
+    "invoked_agent": "Cortex Router",
+    "owner_agent": "agent-router",
+    "source_url": "notion://page/page-001/discussion/discussion-001/comment/comment-001"
   }'
 ```
 
@@ -757,44 +799,15 @@ npm run memory:notion-sync
 
 如果 `project.notion_memory_page_id` 已经写入，上面也可以省略 `NOTION_MEMORY_PAGE_ID`。
 
-启动 Notion 自动循环：
+运行时不再提供 `notion:loop` 这类本地评论轮询。
 
-```bash
-NOTION_API_KEY=secret_xxx \
-PROJECT_ID=PRJ-cortex \
-LOOP_INTERVAL_MS=60000 \
-npm run notion:loop -- --once
-```
+现在的协作入口固定为：
 
-如果 memory 页面很大，先保主链路可用，可以临时跳过 memory 同步：
+- Notion 内 `@Cortex Router` 或评论触发 `Custom Agent`
+- Custom Agent 调用 `/webhook/notion-custom-agent`
+- Cortex 继续在本地维护 `command / decision / checkpoint / memory`
 
-```bash
-SKIP_MEMORY_SYNC=1 \
-NOTION_API_KEY=secret_xxx \
-NOTION_PROJECT_INDEX_DATABASE_ID=e33fca4a-f7dc-4d79-8c44-9a670a2fc83f \
-npm run notion:loop -- --once
-```
-
-这个 loop 会做五件事：
-
-- 把总览面板静默同步到 dedicated review page
-- 把本地 collaboration memory 静默同步到 dedicated memory page
-- 把当前执行文档静默同步到 dedicated execution doc page
-- 把项目入口写入项目索引表，沉淀根页面 / 总览页 / 执行文档 / 协作记忆四个入口
-- 扫描 `notion_scan_page_id` 下的评论，把新评论入队成 `notion_comment` commands
-
-注意：
-
-- `notion_scan_page_id` 应该指向稳定的执行文档 / milestone 文档根页
-- 不要把总览页和执行文档页设成同一页
-- 总览页回答“是否脱轨 / 现在做到哪 / 哪些点需要你拍板”
-- 执行文档页承接具体 milestone 内容，供段落级评论交互
-- 正文承载内容本身；反馈、修改意见和下一步任务写在 Notion comment / discussion 里
-- agent 轮询扫描的是 Notion 评论，不是正文里的“待办指令”
-- 如果希望 loop 自动维护项目索引，再补一个 `NOTION_PROJECT_INDEX_DATABASE_ID`
-- 如果 memory 页面过大导致同步慢，可以先加 `SKIP_MEMORY_SYNC=1` 保评论扫描和 append 历史链路继续在线
-- Review page 需要单写者同步；不要并发跑 `notion:loop` 和 `review:notion-sync`
-- Notion API 偶发 `ECONNRESET / 429` 时，同步层会自动重试，不需要手工重跑第一时间介入
+如果你仍然需要把本地文档镜像到 Notion，则按需分别运行 `review:notion-sync`、`memory:notion-sync`、`execution:notion-sync`、`project-index:notion-sync`，而不是再启动一个常驻 loop。
 
 把当前 milestone 执行文档同步到 Notion：
 
@@ -813,12 +826,8 @@ NOTION_PROJECT_INDEX_DATABASE_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
 npm run project-index:notion-sync
 ```
 
-agent 处理完一条 Notion 评论任务后，可以直接回复原 discussion：
-
-```bash
-NOTION_API_KEY=secret_xxx \
-npm run notion:reply -- CMD-20260324-002 "已按你的评论修改，新的版本已经同步。"
-```
+agent 处理完任务后，应该把结果写回 `POST /webhook/agent-receipt`。
+随后由 Notion Custom Agent 基于最新 `receipt / checkpoint` 在当前讨论线程里原生回复，而不是由本地 token 脚本直接回写 discussion。
 
 直接创建一份方向对齐任务简报：
 

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { compileMemoryHub } from '../src/memory-hub.js';
-import { syncReviewMarkdownToNotion } from '../src/notion-review-sync.js';
+import { resolveProjectSyncPreserveBlockTypes, syncReviewMarkdownToNotion } from '../src/notion-review-sync.js';
 import { loadProjectEnv } from '../src/project-env.js';
 
 loadProjectEnv(process.cwd());
@@ -43,6 +43,10 @@ const result = await syncReviewMarkdownToNotion({
   apiKey,
   pageId,
   markdown,
+  preserveBlockTypes: resolveProjectSyncPreserveBlockTypes({
+    pageId,
+    project: reviewPayload.project,
+  }),
   baseUrl: notionBaseUrl,
   notionVersion,
 });

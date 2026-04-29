@@ -151,10 +151,10 @@ export function buildMemoryHubDocuments({
   );
 
   const baseMemoryDocParts = [
-    '# Base Memory',
+    '# Base Memory（基础记忆）',
     '',
     '- 作用：沉淀稳定协作偏好、原则、规则。',
-    '- 来源：当前 durable base memory + 已有协作基线文本。',
+    '- 来源：当前长期 base memory + 已有协作基线文本。',
     '',
   ];
 
@@ -163,7 +163,7 @@ export function buildMemoryHubDocuments({
     baseMemoryDocParts.push('## 当前基线', '', baselineBody, '');
   }
 
-  baseMemoryDocParts.push('## 结构化 Durable Items', '');
+  baseMemoryDocParts.push('## 结构化长期条目', '');
   if (baseMemories.length === 0) {
     baseMemoryDocParts.push('- 暂无。', '');
   } else {
@@ -173,7 +173,7 @@ export function buildMemoryHubDocuments({
   }
 
   const knowledgeDoc = renderGroupedMemories(
-    'Knowledge',
+    'Knowledge（知识）',
     {
       已接受知识: knowledgeMemories,
     },
@@ -187,17 +187,19 @@ export function buildMemoryHubDocuments({
     accumulator[key].push(memory);
     return accumulator;
   }, {});
-  const timelineDoc = renderGroupedMemories('Timeline', timelineByProject, sourcesByMemory, { showProject: false });
+  const timelineDoc = renderGroupedMemories('Timeline（时间线）', timelineByProject, sourcesByMemory, {
+    showProject: false,
+  });
 
   const candidateGroups = {
-    '待裁定 Base Memory': candidates.filter((memory) => memory.layer === 'base_memory'),
-    '待裁定 Knowledge': candidates.filter((memory) => memory.layer === 'knowledge'),
-    '待裁定 Timeline': candidates.filter((memory) => memory.layer === 'timeline'),
+    '待裁定 Base Memory（基础记忆）': candidates.filter((memory) => memory.layer === 'base_memory'),
+    '待裁定 Knowledge（知识）': candidates.filter((memory) => memory.layer === 'knowledge'),
+    '待裁定 Timeline（时间线）': candidates.filter((memory) => memory.layer === 'timeline'),
   };
   const filteredCandidateGroups = Object.fromEntries(
     Object.entries(candidateGroups).filter(([, memories]) => memories.length > 0),
   );
-  const candidatesDoc = renderGroupedMemories('Candidate Memory', filteredCandidateGroups, sourcesByMemory, {
+  const candidatesDoc = renderGroupedMemories('候选记忆', filteredCandidateGroups, sourcesByMemory, {
     showProject: true,
   });
 
@@ -210,27 +212,28 @@ export function buildMemoryHubDocuments({
               `- [${memory.layer}] ${memory.title} · ${formatStatus(memory)}${memory.nextStep ? ` · ${memory.nextStep}` : ''}`,
           )
           .join('\n')
-      : '- 暂无待裁定 candidate。';
+      : '- 暂无待裁定候选。';
 
   const indexDoc = [
-    '# Cortex Memory Hub',
+    '# Cortex 记忆总览',
     '',
     `- 更新于：${formatDisplayTime(generatedAt)}（上海时间）`,
-    `- Durable：Base ${baseMemories.length} / Knowledge ${knowledgeMemories.length} / Timeline ${timelineMemories.length}`,
-    `- 待裁定 Candidate：${pendingCounts.total}（Base ${pendingCounts.base_memory} / Knowledge ${pendingCounts.knowledge} / Timeline ${pendingCounts.timeline}）`,
+    `- 长期记忆：Base ${baseMemories.length} / Knowledge ${knowledgeMemories.length} / Timeline ${timelineMemories.length}`,
+    `- 待裁定候选：${pendingCounts.total}（Base ${pendingCounts.base_memory} / Knowledge ${pendingCounts.knowledge} / Timeline ${pendingCounts.timeline}）`,
     '',
-    '## Memory Pipeline',
+    '## 记忆流水线',
     '',
-    '1. Raw materials：先从 comment / decision / checkpoint / receipt / suggestion 等原材料里提取候选信号。',
-    '2. Candidate memory：只落候选，不直接写成长期记忆；同时 attach source / evidence / confidence / freshness / next step。',
-    '3. Durable memory：只有 accepted 的条目才进入 durable，并按 Base Memory / Knowledge / Timeline 三类挂载。',
+    '1. 原始材料：先从 comment / decision / checkpoint / receipt / suggestion 等原材料里提取候选信号。',
+    '2. 候选记忆：先落候选，不直接写成长期记忆；同时附带 `source / evidence / confidence / freshness / next_step`。',
+    '3. 长期记忆：只有通过 review 且被确认接受的条目，才会进入 durable，并按 Base Memory / Knowledge / Timeline 三类挂载。',
     '',
     '## 导航',
     '',
-    '- Base Memory：docs/memory/base-memory.md',
-    '- Knowledge：docs/memory/knowledge.md',
-    '- Timeline：docs/memory/timeline.md',
-    '- Candidate Memory：docs/memory/candidates.md',
+    '- Base Memory（基础记忆）：docs/memory/base-memory.md',
+    '- Knowledge（知识）：docs/memory/knowledge.md',
+    '- Timeline（时间线）：docs/memory/timeline.md',
+    '- 候选记忆：docs/memory/candidates.md',
+    '- 项目级记忆：docs/projects/*/memory.md',
     '',
     '## 当前待裁定摘要',
     '',
@@ -240,7 +243,8 @@ export function buildMemoryHubDocuments({
     '',
     '- Base Memory / Knowledge 是全局可复用资产，不按项目拆散。',
     '- Timeline 允许按项目留痕，但仍然收敛到同一个 hub 下管理。',
-    '- 项目只贡献 timeline 事实和 source，不单独维护一份长期记忆正文。',
+    '- 项目级记忆可以单独存在于 docs/projects/*/memory.md，用于保留项目内协作约定、局部知识和项目里程碑。',
+    '- 项目级记忆不会自动并入全局长期记忆中心，只有经过 review 提升后，才会进入全局的 Base / Knowledge / Timeline。',
     '',
   ].join('\n');
 

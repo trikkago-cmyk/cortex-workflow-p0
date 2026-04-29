@@ -28,8 +28,7 @@ async function getJson(baseUrl, pathname) {
   };
 }
 
-test('executor worker claims notion comment, replies, and completes command', async (t) => {
-  const replies = [];
+test('executor worker claims notion comment, records result, and leaves writeback to docs/custom agent', async (t) => {
   const dbDir = mkdtempSync(join(tmpdir(), 'cortex-executor-'));
   const app = createCortexServer({
     dbPath: join(dbDir, 'cortex.db'),
@@ -60,12 +59,6 @@ test('executor worker claims notion comment, replies, and completes command', as
     baseUrl,
     agentName: 'agent-notion-worker',
     source: 'notion_comment',
-    allowLegacyNotionWrites: true,
-    notionApiKey: 'test-notion-key',
-    notionReply: async (payload) => {
-      replies.push(payload);
-      return { id: 'reply-001' };
-    },
     executor: async ({ command }) => ({
       status: 'done',
       replyText: `已处理：${command.instruction}`,
@@ -80,9 +73,9 @@ test('executor worker claims notion comment, replies, and completes command', as
   const result = await worker.pollOnce();
   assert.equal(result.claimed, true);
   assert.equal(result.handled.status, 'done');
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].discussionId, 'discussion-001');
-  assert.equal(replies[0].text, '已处理：继续执行吧');
+  assert.equal(result.handled.replied, false);
+  assert.equal(result.handled.replySkipped, true);
+  assert.equal(result.handled.replySkipReason, 'discussion_writeback_removed');
 
   const commandList = await getJson(baseUrl, '/commands?command_id=' + encodeURIComponent(ingested.body.commandId));
   assert.equal(commandList.status, 200);
@@ -91,7 +84,7 @@ test('executor worker claims notion comment, replies, and completes command', as
   assert.equal(commandList.body.commands[0].result_summary, '评论任务已完成');
 });
 
-test('executor worker no longer fails when custom-agent mode skips token-based notion reply', async (t) => {
+test('executor worker no longer depends on token-based notion reply in custom-agent mode', async (t) => {
   const dbDir = mkdtempSync(join(tmpdir(), 'cortex-executor-custom-agent-no-token-'));
   const app = createCortexServer({
     dbPath: join(dbDir, 'cortex.db'),
@@ -138,7 +131,7 @@ test('executor worker no longer fails when custom-agent mode skips token-based n
   assert.equal(result.handled.status, 'done');
   assert.equal(result.handled.replied, false);
   assert.equal(result.handled.replySkipped, true);
-  assert.equal(result.handled.replySkipReason, 'legacy_notion_api_writes_disabled');
+  assert.equal(result.handled.replySkipReason, 'discussion_writeback_removed');
 
   const commandList = await getJson(baseUrl, '/commands?command_id=' + encodeURIComponent(ingested.body.commandId));
   assert.equal(commandList.status, 200);
@@ -313,8 +306,6 @@ test('executor worker webhook mode resolves agent-specific route from routing fi
     baseUrl,
     agentName: 'agent-pm',
     source: 'notion_comment',
-    notionApiKey: 'test-notion-key',
-    notionReply: async () => ({ id: 'reply-routing-001' }),
     mode: 'webhook',
     routingFile,
     logger: {
@@ -365,8 +356,6 @@ test('executor worker honors onlyUnassigned without defaulting owner to agent na
     agentName: 'agent-router',
     source: 'notion_comment',
     onlyUnassigned: true,
-    notionApiKey: 'test-notion-key',
-    notionReply: async () => ({ id: 'reply-router-unassigned-001' }),
     executor: async () => ({
       status: 'done',
       replyText: 'router 已处理未分配评论',
@@ -417,8 +406,6 @@ test('executor worker can claim router-owned comments while still covering unass
     source: 'notion_comment',
     ownerAgent: 'agent-router',
     includeUnassigned: true,
-    notionApiKey: 'test-notion-key',
-    notionReply: async () => ({ id: 'reply-router-owned-001' }),
     executor: async () => ({
       status: 'done',
       replyText: 'router 已处理 agent-router 队列评论',

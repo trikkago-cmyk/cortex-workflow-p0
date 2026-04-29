@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import {
   fetchWithTimeout,
+  resolveProjectSyncPreserveBlockTypes,
   syncReviewMarkdownToNotion,
 } from '../src/notion-review-sync.js';
 import { buildCompactExecutionMarkdown } from '../src/notion-compact-pages.js';
@@ -70,6 +71,10 @@ const result = await syncReviewMarkdownToNotion({
     reviewPayload,
     executionMarkdown: markdown,
     checkpoints: checkpointsPayload.checkpoints || [],
+  }),
+  preserveBlockTypes: resolveProjectSyncPreserveBlockTypes({
+    pageId,
+    project: reviewPayload.project,
   }),
   baseUrl: notionBaseUrl,
   notionVersion,

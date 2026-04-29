@@ -5,7 +5,6 @@ import { loadExecutorPoolConfig } from './executor-pool.js';
 import { resolvePanghuRuntimeConfig } from './panghu-runtime.js';
 import { loadProjectEnv } from './project-env.js';
 import { isLocalNotificationChannel } from './local-notification.js';
-import { notionCommentPollingEnabled } from './notion-collaboration-mode.js';
 import { createStore } from './store.js';
 
 export function defaultRuntimeDir(cwd = process.cwd()) {
@@ -14,6 +13,14 @@ export function defaultRuntimeDir(cwd = process.cwd()) {
 
 export function panghuPollerEnabled(env = process.env) {
   return String(env.PANGHU_POLL_ENABLE ?? '1').trim() !== '0';
+}
+
+export function customAgentMcpEnabled(env = process.env) {
+  const explicit = String(env.CORTEX_MCP_ENABLE ?? '').trim().toLowerCase();
+  if (explicit === '0' || explicit === 'false' || explicit === 'no' || explicit === 'off') {
+    return false;
+  }
+  return true;
 }
 
 export function panghuPollerShouldRun(env = process.env) {
@@ -72,14 +79,6 @@ export function localNotificationPollerEnabled(env = process.env, options = {}) 
 function normalizeProjectId(value, fallback = 'PRJ-cortex') {
   const text = String(value || '').trim();
   return text || fallback;
-}
-
-export function notionLoopProcessName(projectId) {
-  const suffix = normalizeProjectId(projectId)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return `notion-loop-${suffix}`;
 }
 
 function normalizeName(name) {
@@ -141,7 +140,6 @@ function namesFromConfiguredWorkers(cwd = process.cwd()) {
     return deriveExecutorPoolFromAgentRegistry(agentRegistryFile, {
       fallbackWebhookUrl: process.env.EXECUTOR_WEBHOOK_URL,
       fallbackWebhookToken: process.env.EXECUTOR_WEBHOOK_TOKEN,
-      notionApiKey: process.env.NOTION_API_KEY,
       notionBaseUrl: process.env.NOTION_BASE_URL,
       notionVersion: process.env.NOTION_VERSION,
     }).workers.map((worker) => `executor-worker-${worker.agentName}`);
@@ -154,56 +152,17 @@ function namesFromConfiguredWorkers(cwd = process.cwd()) {
   return [];
 }
 
-function notionEnabledProject(project) {
-  return Boolean(
-    project?.notionReviewPageId ||
-      project?.notionMemoryPageId ||
-      project?.notionScanPageId ||
-      project?.rootPageUrl,
-  );
-}
-
-export function listNotionLoopProjects({
-  cwd = process.cwd(),
-  dbPath = process.env.CORTEX_DB_PATH || resolve(cwd, 'db', 'cortex.db'),
-  defaultProjectId = process.env.CORTEX_DEFAULT_PROJECT_ID || 'PRJ-cortex',
-} = {}) {
-  const projects = [];
-
-  if (dbPath && existsSync(dbPath)) {
-    try {
-      const store = createStore({ dbPath });
-      projects.push(...store.listProjects().filter(notionEnabledProject));
-    } catch {}
-  }
-
-  if (projects.length === 0) {
-    return [
-      {
-        projectId: normalizeProjectId(defaultProjectId),
-      },
-    ];
-  }
-
-  const deduped = new Map();
-  for (const project of projects) {
-    deduped.set(project.projectId, project);
-  }
-  return [...deduped.values()];
-}
-
 export function listManagedProcessNames({ cwd = process.cwd(), runtimeDir = defaultRuntimeDir(cwd) } = {}) {
   loadProjectEnv(cwd);
 
   const names = new Set([
     'cortex-server',
+    'cortex-custom-agent-mcp',
     'executor-multi-agent-handler',
   ]);
 
-  if (notionCommentPollingEnabled(process.env)) {
-    for (const project of listNotionLoopProjects({ cwd })) {
-      names.add(notionLoopProcessName(project.projectId));
-    }
+  if (!customAgentMcpEnabled(process.env)) {
+    names.delete('cortex-custom-agent-mcp');
   }
 
   if (panghuPollerShouldRun(process.env)) {

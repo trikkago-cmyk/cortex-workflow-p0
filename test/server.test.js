@@ -324,17 +324,11 @@ test('webhook/codex-message can bridge executor webhook payloads into outbox han
   assert.match(outbox.body.pending[0].payload.callback_url, /\/webhook\/agent-receipt$/);
 });
 
-test('webhook/agent-receipt records checkpoint and replies back to notion discussion', async (t) => {
-  const replies = [];
+test('webhook/agent-receipt records checkpoint and keeps notion feedback in docs/checkpoints', async (t) => {
   const dbDir = mkdtempSync(join(tmpdir(), 'cortex-agent-receipt-'));
   const app = createCortexServer({
     dbPath: join(dbDir, 'cortex.db'),
     clock: () => new Date('2026-04-01T10:00:00.000Z'),
-    notionApiKey: 'test-notion-key',
-    notionReply: async ({ discussionId, text }) => {
-      replies.push({ discussionId, text });
-      return { id: 'reply-001' };
-    },
   });
 
   await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
@@ -373,13 +367,8 @@ test('webhook/agent-receipt records checkpoint and replies back to notion discus
   assert.equal(receipt.body.command.receipt_count, 1);
   assert.equal(receipt.body.checkpoint.signal_level, 'green');
   assert.match(receipt.body.checkpoint.title, /agent-panghu 回执/);
-  assert.equal(receipt.body.reply_id, 'reply-001');
-  assert.deepEqual(replies, [
-    {
-      discussionId: 'discussion-001',
-      text: '胖虎已处理完成，结果已回传。',
-    },
-  ]);
+  assert.equal(receipt.body.reply_id, null);
+  assert.equal(receipt.body.notion_feedback_mode, 'docs_only');
 });
 
 test('webhook/agent-receipt persists receipt history and dedupes by idempotency key', async (t) => {

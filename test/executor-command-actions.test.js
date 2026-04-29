@@ -175,17 +175,11 @@ test('notion comment directive can flow through router-owned command and update 
     logger: { warn() {}, error() {} },
   });
 
-  const replies = [];
   const workerOptions = {
     baseUrl,
     source: 'notion_comment',
     fetchImpl: fetch,
     executor: multiExecutor,
-    notionApiKey: 'test-notion-key',
-    notionReply: async ({ discussionId, text }) => {
-      replies.push({ discussionId, text });
-      return { id: `reply-${replies.length}` };
-    },
     logger: { info() {}, error() {} },
   };
 
@@ -243,5 +237,4 @@ test('notion comment directive can flow through router-owned command and update 
   const suggestionDetailPayload = await suggestionDetailResponse.json();
   assert.equal(suggestionDetailResponse.status, 200);
   assert.equal(suggestionDetailPayload.suggestion.status, 'accepted');
-  assert.equal(replies.length, 0);
 });

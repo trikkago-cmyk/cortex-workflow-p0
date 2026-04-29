@@ -196,45 +196,6 @@ test('pm handler still completes when notion sync scripts fail', async (t) => {
   assert.deepEqual(runs, []);
 });
 
-test('pm handler can still run legacy notion sync when explicitly enabled', async (t) => {
-  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-pm-legacy-sync-opt-in-'));
-  const app = createCortexServer({
-    dbPath: join(dbDir, 'cortex.db'),
-    clock: () => new Date('2026-03-31T11:05:00.000Z'),
-  });
-
-  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
-  t.after(() => app.close());
-
-  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
-  const runs = [];
-  const pmHandler = createPmHandler({
-    cortexBaseUrl: baseUrl,
-    allowLegacyNotionWrites: true,
-    logger: { info() {}, warn() {}, error() {} },
-    runScript(scriptName) {
-      runs.push(scriptName);
-      return { scriptName };
-    },
-  });
-
-  const result = await pmHandler({
-    agentName: 'agent-pm',
-    projectId: 'PRJ-cortex',
-    command: {
-      command_id: 'CMD-pm-legacy-sync-001',
-      instruction: '@pm 把这段需求整理成 why/context/what',
-      source: 'notion_comment',
-      source_url: 'notion://page/page-legacy-sync/discussion/discussion-legacy-sync/comment/comment-legacy-sync',
-      target_type: 'page',
-      target_id: 'page-legacy-sync',
-    },
-  });
-
-  assert.equal(result.status, 'done');
-  assert.deepEqual(runs, ['review:notion-sync', 'project-index:notion-sync']);
-});
-
 test('multi-agent handler server dispatches by path agent', async (t) => {
   const server = createExecutorMultiAgentServer({
     execute: async ({ agentName, command }) => ({

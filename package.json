@@ -10,6 +10,8 @@
     "automation:status": "node scripts/automation-status.js",
     "automation:stop": "node scripts/automation-stop.js",
     "automation:ensure": "node scripts/automation-ensure.js",
+    "runtime:readiness": "node scripts/runtime-readiness.js",
+    "runtime:cleanup": "node scripts/runtime-backlog-cleanup.js",
     "automation:restart": "npm run automation:stop && npm run automation:start && npm run automation:status",
     "launchd:install": "node scripts/launchd-install.js",
     "launchd:status": "node scripts/launchd-status.js",
@@ -29,16 +31,14 @@
     "notion:cleanup-obsolete": "node scripts/notion-cleanup-obsolete.js",
     "memory:compile": "node scripts/memory-compile.js",
     "memory:notion-sync": "node scripts/memory-sync.js",
-    "notion:loop": "node scripts/notion-loop.js",
-    "notion:loop:legacy": "NOTION_COLLAB_MODE=legacy_polling node scripts/notion-loop.js",
-    "notion:reply": "node scripts/notion-reply.js",
-    "notion:smoke": "node scripts/notion-comment-smoke.js",
-    "notion:smoke:legacy": "NOTION_COLLAB_MODE=legacy_polling node scripts/notion-comment-smoke.js",
     "notion:sync-all": "node scripts/notion-sync-all.js",
+    "notion:custom-agent-mcp": "node src/cortex-mcp-server.js",
+    "mcp:server": "node src/cortex-mcp-server.js",
     "execution:notion-sync": "node scripts/notion-sync-execution-doc.js",
     "project-index:notion-sync": "node scripts/notion-sync-project-index.js",
     "project-index:dedupe": "node scripts/project-index-dedupe.js",
     "agent:register": "node scripts/register-external-agent.js",
+    "agent:onboarding-smoke": "node scripts/external-agent-onboarding-smoke.js",
     "agent:receipt": "node scripts/agent-receipt.js",
     "agent:complete": "node scripts/external-agent-complete.js",
     "handoff:live": "node scripts/live-handoff.js",
@@ -56,5 +56,9 @@
     "executor:stub": "node src/executor-webhook-stub.js",
     "smoke": "node --test test/workflow-engine.test.js",
     "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
   }
 }

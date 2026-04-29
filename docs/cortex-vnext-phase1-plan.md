@@ -388,7 +388,7 @@ Phase 1 的核心不是“只建表”。
 
 示例：
 
-- “不是有回帖就算成功，必须验证 fresh reply 和 child command 闭环”
+- “不是有一条表面回复就算成功，必须验证 fresh checkpoint / receipt 和 child command 闭环”
 
 #### G. 新接入模式或协作协议验证通过
 
@@ -545,7 +545,7 @@ Phase 1 的折中方案：
 
 - comment 中提取结构化 suggestion
 - 在 Cortex 内部落 suggestion object
-- discussion 回帖时附带：
+- 协作面回显时附带：
   - proposed text
   - reason
   - accept / reject 状态

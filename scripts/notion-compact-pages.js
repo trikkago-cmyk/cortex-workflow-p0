@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { buildCompactExecutionMarkdown, buildCompactReviewMarkdown, buildProjectMemoryLandingMarkdown } from '../src/notion-compact-pages.js';
 import { compileMemoryHub } from '../src/memory-hub.js';
-import { fetchWithTimeout, syncReviewMarkdownToNotion } from '../src/notion-review-sync.js';
+import {
+  fetchWithTimeout,
+  resolveProjectSyncPreserveBlockTypes,
+  syncReviewMarkdownToNotion,
+} from '../src/notion-review-sync.js';
 import { loadProjectEnv } from '../src/project-env.js';
 import { ensureProjectWorkspace } from '../src/project-workspace.js';
 
@@ -76,6 +80,10 @@ for (const project of projects) {
         executionMarkdown,
         checkpoints: checkpointsPayload.checkpoints || [],
       }),
+      preserveBlockTypes: resolveProjectSyncPreserveBlockTypes({
+        pageId: project.notion_review_page_id || project.notionReviewPageId,
+        project: reviewPayload.project,
+      }),
       baseUrl: notionBaseUrl,
       notionVersion,
     });
@@ -91,6 +99,10 @@ for (const project of projects) {
         reviewPayload,
         executionMarkdown,
         checkpoints: checkpointsPayload.checkpoints || [],
+      }),
+      preserveBlockTypes: resolveProjectSyncPreserveBlockTypes({
+        pageId: project.notion_scan_page_id || project.notionScanPageId,
+        project: reviewPayload.project,
       }),
       baseUrl: notionBaseUrl,
       notionVersion,
@@ -109,6 +121,10 @@ for (const project of projects) {
               project,
               globalMemoryUrl,
             }),
+      preserveBlockTypes: resolveProjectSyncPreserveBlockTypes({
+        pageId: project.notion_memory_page_id || project.notionMemoryPageId,
+        project: reviewPayload.project,
+      }),
       baseUrl: notionBaseUrl,
       notionVersion,
     });

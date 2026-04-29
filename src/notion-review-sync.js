@@ -4,6 +4,7 @@ export const DEFAULT_DISPLAY_TIME_ZONE = process.env.CORTEX_DISPLAY_TIMEZONE || 
 export const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.NOTION_REQUEST_TIMEOUT_MS || 15000);
 export const DEFAULT_NOTION_RETRY_ATTEMPTS = Math.max(1, Number(process.env.NOTION_RETRY_ATTEMPTS || 3));
 export const DEFAULT_NOTION_RETRY_BASE_MS = Math.max(0, Number(process.env.NOTION_RETRY_BASE_MS || 600));
+const ROOT_PAGE_PRESERVE_BLOCK_TYPES = ['child_page', 'child_database'];
 
 function firstNonAsciiChar(value) {
   return [...String(value || '')].find((char) => char.charCodeAt(0) > 255) || null;
@@ -44,6 +45,52 @@ export function validateNotionConfig({ apiKey, baseUrl, notionVersion } = {}) {
     baseUrl: normalizedBaseUrl,
     notionVersion: normalizedVersion,
   };
+}
+
+export function extractNotionPageId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  const direct = raw.replace(/-/g, '');
+  if (/^[0-9a-fA-F]{32}$/.test(direct)) {
+    return direct.toLowerCase();
+  }
+
+  const urlMatch = raw.match(/([0-9a-fA-F]{32})/);
+  if (urlMatch) {
+    return String(urlMatch[1]).toLowerCase();
+  }
+
+  return raw.toLowerCase();
+}
+
+export function resolveProjectSyncPreserveBlockTypes({
+  pageId,
+  project,
+  preserveBlockTypes = [],
+} = {}) {
+  const preservedTypes = new Set(
+    Array.isArray(preserveBlockTypes)
+      ? preserveBlockTypes.map((value) => String(value || '').trim()).filter(Boolean)
+      : [],
+  );
+  const targetPageId = extractNotionPageId(pageId);
+  const rootLikePageIds = new Set(
+    [
+      extractNotionPageId(project?.rootPageUrl || project?.root_page_url),
+      extractNotionPageId(project?.notionParentPageId || project?.notion_parent_page_id),
+    ].filter(Boolean),
+  );
+
+  if (targetPageId && rootLikePageIds.has(targetPageId)) {
+    for (const blockType of ROOT_PAGE_PRESERVE_BLOCK_TYPES) {
+      preservedTypes.add(blockType);
+    }
+  }
+
+  return [...preservedTypes];
 }
 
 export function formatDisplayTime(dateInput = new Date(), timeZone = DEFAULT_DISPLAY_TIME_ZONE) {
@@ -752,6 +799,7 @@ export async function syncReviewMarkdownToNotion({
   apiKey,
   pageId,
   markdown,
+  preserveBlockTypes = [],
   baseUrl = DEFAULT_NOTION_BASE_URL,
   notionVersion = DEFAULT_NOTION_VERSION,
 }) {
@@ -762,10 +810,22 @@ export async function syncReviewMarkdownToNotion({
     notionVersion,
   });
 
+  const preservedTypes = new Set(
+    Array.isArray(preserveBlockTypes)
+      ? preserveBlockTypes.map((value) => String(value || '').trim()).filter(Boolean)
+      : [],
+  );
   const deletableChildren = existingChildren.filter((block) => !block.archived && !block.in_trash);
+  const preservedChildren = preservedTypes.size > 0
+    ? deletableChildren.filter((block) => preservedTypes.has(String(block.type || '').trim()))
+    : [];
+  const blocksToDelete =
+    preservedTypes.size > 0
+      ? deletableChildren.filter((block) => !preservedTypes.has(String(block.type || '').trim()))
+      : deletableChildren;
   let deletedCount = 0;
 
-  for (const block of deletableChildren) {
+  for (const block of blocksToDelete) {
     try {
       await deleteBlock({
         apiKey,
@@ -784,19 +844,32 @@ export async function syncReviewMarkdownToNotion({
   }
 
   const blocks = markdownToNotionBlocks(markdown);
-  const batches = [];
-  for (let index = 0; index < blocks.length; index += 100) {
-    batches.push(blocks.slice(index, index + 100));
-  }
+  if (blocks.length > 0) {
+    if (preservedChildren.length > 0) {
+      await insertBlockChildrenInOrder({
+        apiKey,
+        blockId: pageId,
+        children: blocks,
+        position: { type: 'start' },
+        baseUrl,
+        notionVersion,
+      });
+    } else {
+      const batches = [];
+      for (let index = 0; index < blocks.length; index += 100) {
+        batches.push(blocks.slice(index, index + 100));
+      }
 
-  for (const batch of batches) {
-    await appendBlockChildren({
-      apiKey,
-      blockId: pageId,
-      children: batch,
-      baseUrl,
-      notionVersion,
-    });
+      for (const batch of batches) {
+        await appendBlockChildren({
+          apiKey,
+          blockId: pageId,
+          children: batch,
+          baseUrl,
+          notionVersion,
+        });
+      }
+    }
   }
 
   return {

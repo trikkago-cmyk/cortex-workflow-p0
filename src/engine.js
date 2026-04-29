@@ -1336,6 +1336,15 @@ export class CortexEngine {
     };
   }
 
+  archiveOutbox(id, note) {
+    const message = this.store.archiveOutbox(id, note);
+    return {
+      ok: true,
+      id: message.id,
+      status: message.status,
+    };
+  }
+
   health() {
     return {
       ok: true,

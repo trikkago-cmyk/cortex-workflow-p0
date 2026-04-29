@@ -2308,6 +2308,17 @@ export class CortexStore {
     return mapOutboxRow(this.db.prepare('SELECT * FROM outbox WHERE id = ?').get(id));
   }
 
+  archiveOutbox(id, note) {
+    const existing = this.db.prepare('SELECT * FROM outbox WHERE id = ?').get(id);
+    if (!existing) {
+      throw new Error(`Unknown outbox message ${id}`);
+    }
+
+    const nextNote = note === undefined ? existing.error : note;
+    this.db.prepare('UPDATE outbox SET status = ?, error = ? WHERE id = ?').run('archived', nextNote, id);
+    return mapOutboxRow(this.db.prepare('SELECT * FROM outbox WHERE id = ?').get(id));
+  }
+
   claimNextCommand(filters = {}) {
     const clauses = ['status = ?'];
     const args = ['new'];
