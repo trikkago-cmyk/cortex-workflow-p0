@@ -40,6 +40,7 @@
     "project-index:dedupe": "node scripts/project-index-dedupe.js",
     "agent:register": "node scripts/register-external-agent.js",
     "agent:onboarding-smoke": "node scripts/external-agent-onboarding-smoke.js",
+    "agent:setup-bundle": "node scripts/custom-agent-setup-bundle.js",
     "agent:live-uat": "node scripts/notion-custom-agent-live-uat.js",
     "agent:receipt": "node scripts/agent-receipt.js",
     "agent:complete": "node scripts/external-agent-complete.js",

@@ -19,6 +19,7 @@
   - `receipt -> command done + checkpoint`
 - 同一轮验收里，red 场景产生的临时 outbox 已自动归档，`remaining_pending_count = 0`
 - `npm run runtime:soak -- --project PRJ-cortex --iterations 2 --interval-ms 500 --samples 1` 也已返回 `status = ready`
+- `npm run agent:setup-bundle -- --project PRJ-cortex` 已确认当前唯一 blocker 是 `public_mcp_url_missing`
 - 现在剩下的不是 Cortex 侧 contract，而是 Notion UI 里的最后一段人工挂接：
   - 把公网 MCP endpoint 挂到目标 `Custom Agent`
   - 打开 trigger

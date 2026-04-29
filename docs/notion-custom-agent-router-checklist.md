@@ -2,6 +2,34 @@
 
 最近更新：2026-04-27
 
+## 2026-04-29 当前根因结论
+
+如果问“为什么我们到现在还没有真正成功接入过一个 Custom Agent”，当前最准确的答案是：
+
+- 不是 Cortex 本地 runtime 没准备好
+- 不是 `/notion/custom-agent/context` 或 `/webhook/notion-custom-agent` 没通
+- 也不是 MCP tool 面不存在
+- 当前真实 blocker 是：**还没有配置一个当前可用的公网 HTTPS MCP URL**
+
+这轮已经新增一个固定检查命令：
+
+```bash
+npm run agent:setup-bundle -- --project PRJ-cortex
+```
+
+当前它会直接返回：
+
+- `local_mcp.ok = true`
+- `cortex_context.ok = true`
+- `status = action_required`
+- `blockers = ["public_mcp_url_missing"]`
+
+也就是说：
+
+- 本地 Cortex 侧已经 ready
+- Bearer 鉴权也已经准备好
+- 但 Notion 云端还没有一个能连进你这台机器的当前公网 MCP 地址
+
 ## 目标
 
 这份文档只做一件事：

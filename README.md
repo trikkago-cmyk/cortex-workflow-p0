@@ -240,6 +240,19 @@ npm run agent:live-uat -- \
 
 并在验完后自动归档临时 red outbox，避免污染主 runtime 的 readiness。
 
+如果要直接看“为什么现在还没真正接入成功一个 Notion Custom Agent”，用：
+
+```bash
+npm run agent:setup-bundle -- --project PRJ-cortex
+```
+
+这条命令会直接告诉你：
+
+- 本地 `cortex-custom-agent-mcp` 是否健康
+- `/notion/custom-agent/context` 是否正常
+- 当前是否已经配置可用的公网 HTTPS MCP URL
+- Notion 里该填哪些 trigger、tools、Header
+
 如果只是临时托底，才用本地 stub：
 
 ```bash
