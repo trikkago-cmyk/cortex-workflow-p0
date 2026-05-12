@@ -2,7 +2,9 @@ import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   buildCustomAgentSetupBundle,
+  extractNotionPageId,
   normalizePublicMcpUrl,
+  notionPageUrlFromId,
 } from '../src/custom-agent-setup-bundle.js';
 import { loadProjectEnv } from '../src/project-env.js';
 
@@ -58,6 +60,18 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
+async function safeRequestJson(url, options = {}) {
+  try {
+    return await requestJson(url, options);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.message || String(error),
+      url,
+    };
+  }
+}
+
 function renderMarkdown(bundle) {
   const lines = [];
 
@@ -69,8 +83,17 @@ function renderMarkdown(bundle) {
   lines.push(`- 本地 MCP 健康：\`${bundle.local_mcp.ok ? 'ok' : 'fail'}\``);
   lines.push(`- Cortex 上下文：\`${bundle.cortex_context.ok ? 'ok' : 'fail'}\``);
   lines.push(`- 鉴权：\`${bundle.auth.required ? 'Bearer required' : 'none'}\``);
+  if (bundle.target_page.page_url) {
+    lines.push(`- 目标页面：${bundle.target_page.page_url}`);
+    lines.push(
+      `- 目标页面是否已在当前项目 scope：\`${bundle.target_page.in_project_scope === null ? 'unknown' : bundle.target_page.in_project_scope ? 'yes' : 'no'}\``,
+    );
+  }
   if (bundle.auth.token_preview) {
     lines.push(`- Token 预览：\`${bundle.auth.token_preview}\``);
+  }
+  if (bundle.blockers.length > 0) {
+    lines.push(`- Blockers：${bundle.blockers.map((item) => `\`${item}\``).join('、')}`);
   }
   lines.push('');
   lines.push('## Notion 里要填的内容');
@@ -108,11 +131,20 @@ const publicMcpUrl = normalizePublicMcpUrl(
 );
 const bearerToken = compact(process.env.CORTEX_MCP_BEARER_TOKEN || '');
 const allowedHosts = parseList(process.env.CORTEX_MCP_ALLOWED_HOSTS || '');
+const targetPageInput = compact(
+  args.target_page_url ||
+    args.target_page ||
+    process.env.NOTION_TARGET_PAGE_URL ||
+    process.env.NOTION_TARGET_PAGE_ID ||
+    '',
+);
+const targetPageId = extractNotionPageId(targetPageInput);
+const targetPageUrl = notionPageUrlFromId(targetPageId) || targetPageInput || null;
 
-const localMcpHealth = await requestJson(`${mcpBaseUrl}/health`, {
+const localMcpHealth = await safeRequestJson(`${mcpBaseUrl}/health`, {
   headers: bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {},
 });
-const cortexContext = await requestJson(
+const cortexContext = await safeRequestJson(
   `${baseUrl}/notion/custom-agent/context?project_id=${encodeURIComponent(projectId)}`,
 );
 
@@ -124,6 +156,8 @@ const bundle = buildCustomAgentSetupBundle({
   publicMcpUrl,
   bearerToken,
   allowedHosts,
+  targetPageId,
+  targetPageUrl,
 });
 
 const markdown = renderMarkdown(bundle);

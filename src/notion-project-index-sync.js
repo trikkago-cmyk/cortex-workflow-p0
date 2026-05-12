@@ -68,6 +68,70 @@ function normalizeCheckpointText(value) {
     .trim();
 }
 
+function summarizeProjectIndexText(value, maxLength = 80, fallback = '暂无') {
+  const normalized = normalizeCheckpointText(value);
+  if (!normalized) {
+    return fallback;
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function normalizeBoardDataForDisplay(boardData = {}) {
+  return {
+    currentTask: summarizeProjectIndexText(boardData.currentTask, 48, '未设置'),
+    currentProgress: summarizeProjectIndexText(boardData.currentProgress, 72, '暂无进展摘要'),
+    riskStatus: summarizeProjectIndexText(boardData.riskStatus, 12, '正常'),
+    riskPoint: summarizeProjectIndexText(boardData.riskPoint, 56, '无'),
+    greenAction: summarizeProjectIndexText(boardData.greenAction, 56, '无'),
+    nextStep: summarizeProjectIndexText(boardData.nextStep, 56, '无'),
+    redCount: Number(boardData.redCount || boardData.red_count || 0),
+    yellowCount: Number(boardData.yellowCount || boardData.yellow_count || 0),
+  };
+}
+
+function buildProjectIndexLatestSummary({ projectStatus = 'active', boardData = {} } = {}) {
+  const normalizedStatus = normalizeCheckpointText(projectStatus || 'active').toLowerCase();
+  const normalizedBoardData = normalizeBoardDataForDisplay(boardData);
+
+  if (normalizedStatus === 'paused') {
+    return '项目已暂停，等待恢复。';
+  }
+  if (normalizedStatus === 'archived') {
+    return '项目已归档。';
+  }
+  if (normalizedBoardData.riskStatus === '红灯' && normalizedBoardData.riskPoint !== '无') {
+    return summarizeProjectIndexText(`红灯待拍板：${normalizedBoardData.riskPoint}`, 72);
+  }
+  if (normalizedBoardData.riskStatus === '红灯' && normalizedBoardData.redCount > 0) {
+    return `红灯待拍板：${normalizedBoardData.redCount} 项待决策`;
+  }
+  if (normalizedBoardData.riskStatus === '黄灯' && normalizedBoardData.riskPoint !== '无') {
+    return summarizeProjectIndexText(`黄灯关注：${normalizedBoardData.riskPoint}`, 72);
+  }
+  if (normalizedBoardData.riskStatus === '黄灯' && normalizedBoardData.yellowCount > 0) {
+    return `黄灯关注：${normalizedBoardData.yellowCount} 项待回看`;
+  }
+  if (normalizedBoardData.currentProgress !== '暂无进展摘要') {
+    return summarizeProjectIndexText(`已推进：${normalizedBoardData.currentProgress}`, 72);
+  }
+  if (normalizedBoardData.greenAction !== '无') {
+    return summarizeProjectIndexText(`已推进：${normalizedBoardData.greenAction}`, 72);
+  }
+  if (normalizedBoardData.nextStep !== '无') {
+    return summarizeProjectIndexText(`下一步：${normalizedBoardData.nextStep}`, 72);
+  }
+  return '当前无异常，继续推进。';
+}
+
+function buildProjectRowTitle(projectId, boardData = {}) {
+  const normalizedProjectId = normalizeCheckpointText(projectId) || 'unknown-project';
+  const normalizedBoardData = normalizeBoardDataForDisplay(boardData);
+  return `${normalizedProjectId} · ${normalizedBoardData.currentTask || '未命名任务'}`;
+}
+
 function richTextPropertyValue(page, propertyName) {
   const property = page?.properties?.[propertyName];
   if (property?.type === 'rich_text') {
@@ -95,15 +159,16 @@ function urlPropertyValue(page, propertyName) {
 }
 
 function checkpointPayload({ projectId, status, boardData = {} }) {
+  const normalizedBoardData = normalizeBoardDataForDisplay(boardData);
   return {
     projectId: normalizeCheckpointText(projectId),
     status: normalizeCheckpointText(status || 'active'),
-    currentTask: normalizeCheckpointText(boardData.currentTask),
-    currentProgress: normalizeCheckpointText(boardData.currentProgress),
-    riskStatus: normalizeCheckpointText(boardData.riskStatus),
-    riskPoint: normalizeCheckpointText(boardData.riskPoint),
-    greenAction: normalizeCheckpointText(boardData.greenAction),
-    nextStep: normalizeCheckpointText(boardData.nextStep),
+    currentTask: normalizeCheckpointText(normalizedBoardData.currentTask),
+    currentProgress: normalizeCheckpointText(normalizedBoardData.currentProgress),
+    riskStatus: normalizeCheckpointText(normalizedBoardData.riskStatus),
+    riskPoint: normalizeCheckpointText(normalizedBoardData.riskPoint),
+    greenAction: normalizeCheckpointText(normalizedBoardData.greenAction),
+    nextStep: normalizeCheckpointText(normalizedBoardData.nextStep),
   };
 }
 
@@ -120,14 +185,14 @@ function pageProjectId(page) {
 }
 
 function pageBoardData(page) {
-  return {
+  return normalizeBoardDataForDisplay({
     currentTask: richTextPropertyValue(page, '当前任务'),
     currentProgress: richTextPropertyValue(page, '当前进展'),
     riskStatus: selectPropertyValue(page, '风险状态'),
     riskPoint: richTextPropertyValue(page, '风险点'),
     greenAction: richTextPropertyValue(page, '已推进'),
     nextStep: richTextPropertyValue(page, '下一步'),
-  };
+  });
 }
 
 function pageCheckpointKey(page) {
@@ -189,26 +254,11 @@ export function notionPageUrlFromId(pageId) {
 
 export function buildProjectIndexSummary(reviewPayload = {}) {
   const project = reviewPayload.project || {};
-  const summary = reviewPayload.summary || {};
-  const latestBrief = summary.latest_brief;
-  const latestCheckpoint = summary.latest_checkpoint;
-  const redCount = (summary.red_decisions || []).length;
-  const yellowCount = (summary.yellow_decisions || []).length;
-  const latestDone = summary.recent_done_commands?.[0]?.result_summary;
-  const nextStep = latestCheckpoint?.next_step || summary.next_steps?.[0];
-
-  const parts = [
-    `状态：${project.status || 'unknown'}`,
-    latestCheckpoint?.title ? `当前任务：${latestCheckpoint.title}` : latestBrief?.title ? `当前任务：${latestBrief.title}` : null,
-    redCount > 0 ? `红灯：${redCount}` : null,
-    yellowCount > 0 ? `黄灯：${yellowCount}` : null,
-    latestCheckpoint?.quality_grade ? `质量：${latestCheckpoint.quality_grade}` : null,
-    latestCheckpoint?.anomaly_level ? `异常：${latestCheckpoint.anomaly_level}` : null,
-    latestDone ? `最近完成：${latestDone}` : null,
-    nextStep ? `下一步：${nextStep}` : null,
-  ].filter(Boolean);
-
-  return parts.join('；');
+  const boardData = extractProjectBoardData(reviewPayload);
+  return buildProjectIndexLatestSummary({
+    projectStatus: project.status || 'active',
+    boardData,
+  });
 }
 
 export function extractProjectBoardData(reviewPayload = {}) {
@@ -255,7 +305,7 @@ export function extractProjectBoardData(reviewPayload = {}) {
     '无';
   const nextStep = latestCheckpoint?.next_step || nextSteps[0] || '无';
 
-  return {
+  return normalizeBoardDataForDisplay({
     currentTask,
     currentProgress,
     riskStatus,
@@ -264,7 +314,7 @@ export function extractProjectBoardData(reviewPayload = {}) {
     nextStep,
     redCount: redDecisions.length,
     yellowCount: yellowDecisions.length,
-  };
+  });
 }
 
 export function mergeBoardDataWithExecutionDoc(boardData, markdown = '') {
@@ -340,7 +390,7 @@ export function mergeBoardDataWithExecutionDoc(boardData, markdown = '') {
   const yellowDecision = extractDecisionSegment('🟡');
   const greenDecision = extractDecisionSegment('🟢');
 
-  return {
+  return normalizeBoardDataForDisplay({
     ...boardData,
     currentTask: currentTask || task || boardData.currentTask,
     currentProgress:
@@ -382,7 +432,7 @@ export function mergeBoardDataWithExecutionDoc(boardData, markdown = '') {
           ? summarizeItems(greenItems).join('；')
           : boardData.greenAction,
     nextStep: nextStepLine || nextItems[0] || boardData.nextStep,
-  };
+  });
 }
 
 async function retrieveDatabase({
@@ -535,6 +585,9 @@ function buildSchemaPatch(database) {
   if (!properties['项目 ID']) {
     missing['项目 ID'] = { rich_text: {} };
   }
+  if (!properties['项目']) {
+    missing['项目'] = { select: {} };
+  }
   if (!properties['同步键']) {
     missing['同步键'] = { rich_text: {} };
   }
@@ -580,12 +633,19 @@ function buildRowProperties({
   syncedAtIso,
   boardData,
 }) {
+  const normalizedBoardData = normalizeBoardDataForDisplay(boardData);
+  const normalizedLatestSummary = summarizeProjectIndexText(latestSummary, 96, '当前无异常，继续推进。');
   return {
     [titlePropertyName]: {
       title: chunkRichText(rowTitle),
     },
     '项目 ID': {
       rich_text: chunkRichText(projectId),
+    },
+    项目: {
+      select: {
+        name: projectId,
+      },
     },
     同步键: {
       rich_text: chunkRichText(snapshotKey),
@@ -608,27 +668,27 @@ function buildRowProperties({
       url: memoryPageUrl || null,
     },
     最新摘要: {
-      rich_text: chunkRichText(latestSummary),
+      rich_text: chunkRichText(normalizedLatestSummary),
     },
     当前任务: {
-      rich_text: chunkRichText(boardData.currentTask),
+      rich_text: chunkRichText(normalizedBoardData.currentTask),
     },
     当前进展: {
-      rich_text: chunkRichText(boardData.currentProgress),
+      rich_text: chunkRichText(normalizedBoardData.currentProgress),
     },
     风险状态: {
       select: {
-        name: boardData.riskStatus,
+        name: normalizedBoardData.riskStatus,
       },
     },
     风险点: {
-      rich_text: chunkRichText(boardData.riskPoint),
+      rich_text: chunkRichText(normalizedBoardData.riskPoint),
     },
     已推进: {
-      rich_text: chunkRichText(boardData.greenAction),
+      rich_text: chunkRichText(normalizedBoardData.greenAction),
     },
     下一步: {
-      rich_text: chunkRichText(boardData.nextStep),
+      rich_text: chunkRichText(normalizedBoardData.nextStep),
     },
     更新时间: {
       rich_text: chunkRichText(`${syncedAt}（本地同步）`),
@@ -683,6 +743,8 @@ export async function syncProjectIndexRow({
   baseUrl = DEFAULT_NOTION_BASE_URL,
   notionVersion = DEFAULT_NOTION_DATABASE_VERSION,
 }) {
+  const normalizedBoardData = normalizeBoardDataForDisplay(boardData);
+  const normalizedLatestSummary = summarizeProjectIndexText(latestSummary, 96, '当前无异常，继续推进。');
   const database = await retrieveDatabase({
     apiKey,
     databaseId,
@@ -720,18 +782,18 @@ export async function syncProjectIndexRow({
     projectId,
     syncedAt: displaySyncedAt,
     projectUpdatedAt: displayProjectUpdatedAt,
-    latestSummary,
-    boardData,
+    latestSummary: normalizedLatestSummary,
+    boardData: normalizedBoardData,
   });
   const checkpointKey = buildProjectCheckpointKey({
     projectId,
     status,
-    boardData,
+    boardData: normalizedBoardData,
   });
   const snapshotKey = buildStoredCheckpointKey({
     projectId,
     status,
-    boardData,
+    boardData: normalizedBoardData,
   });
   const existingPages = sortPagesBySyncTimeDesc(
     liveDatabasePages(
@@ -744,6 +806,20 @@ export async function syncProjectIndexRow({
     ).filter((page) => pageProjectId(page) === normalizeCheckpointText(projectId)),
   );
   const latestProjectPage = existingPages[0] || null;
+  const olderProjectPages = latestProjectPage ? existingPages.slice(1) : [];
+  const archiveOlderProjectPages = async () => {
+    const archivedPageIds = [];
+    for (const page of olderProjectPages) {
+      await archivePage({
+        apiKey,
+        pageId: page.id,
+        baseUrl,
+        notionVersion,
+      });
+      archivedPageIds.push(page.id);
+    }
+    return archivedPageIds;
+  };
   if (latestProjectPage && pageCheckpointKey(latestProjectPage) === checkpointKey) {
     const metadataUnchanged =
       normalizeCheckpointText(selectPropertyValue(latestProjectPage, '状态')) === normalizeCheckpointText(status || 'active') &&
@@ -751,14 +827,17 @@ export async function syncProjectIndexRow({
       normalizeCheckpointText(urlPropertyValue(latestProjectPage, '总览页')) === normalizeCheckpointText(reviewPageUrl || '') &&
       normalizeCheckpointText(urlPropertyValue(latestProjectPage, '执行文档')) === normalizeCheckpointText(executionDocUrl || '') &&
       normalizeCheckpointText(urlPropertyValue(latestProjectPage, '协作记忆')) === normalizeCheckpointText(memoryPageUrl || '') &&
-      normalizeCheckpointText(richTextPropertyValue(latestProjectPage, '最新摘要')) === normalizeCheckpointText(latestSummary) &&
+      normalizeCheckpointText(richTextPropertyValue(latestProjectPage, '最新摘要')) ===
+        normalizeCheckpointText(normalizedLatestSummary) &&
       normalizeCheckpointText(richTextPropertyValue(latestProjectPage, '项目更新时间')) ===
-        normalizeCheckpointText(displayProjectUpdatedAt);
+        normalizeCheckpointText(displayProjectUpdatedAt) &&
+      normalizeCheckpointText(titleFromPage(latestProjectPage, titlePropertyName)) ===
+        normalizeCheckpointText(buildProjectRowTitle(projectId, normalizedBoardData));
 
     if (!metadataUnchanged) {
       const refreshProperties = buildRowProperties({
         titlePropertyName,
-        rowTitle: titleFromPage(latestProjectPage, titlePropertyName) || `${projectId} · ${boardData.currentTask || '未命名任务'}`,
+        rowTitle: buildProjectRowTitle(projectId, normalizedBoardData),
         projectId,
         snapshotKey,
         status,
@@ -766,11 +845,11 @@ export async function syncProjectIndexRow({
         reviewPageUrl,
         executionDocUrl,
         memoryPageUrl,
-        latestSummary,
+        latestSummary: normalizedLatestSummary,
         syncedAt: displaySyncedAt,
         projectUpdatedAt: displayProjectUpdatedAt,
         syncedAtIso,
-        boardData,
+        boardData: normalizedBoardData,
       });
 
       delete refreshProperties[titlePropertyName];
@@ -793,6 +872,8 @@ export async function syncProjectIndexRow({
         notionVersion,
       });
 
+      const archivedPageIds = await archiveOlderProjectPages();
+
       return {
         created: false,
         skipped: false,
@@ -800,18 +881,75 @@ export async function syncProjectIndexRow({
         reason: 'same_checkpoint_refreshed',
         pageId: latestProjectPage.id,
         url: latestProjectPage.url || notionPageUrlFromId(latestProjectPage.id),
+        archivedCount: archivedPageIds.length,
+        archivedPageIds,
       };
     }
 
+    const archivedPageIds = await archiveOlderProjectPages();
+
     return {
       created: false,
-      skipped: true,
-      reason: 'same_checkpoint',
+      skipped: archivedPageIds.length === 0,
+      reason: archivedPageIds.length > 0 ? 'same_checkpoint_compacted' : 'same_checkpoint',
       pageId: latestProjectPage.id,
       url: latestProjectPage.url || notionPageUrlFromId(latestProjectPage.id),
+      archivedCount: archivedPageIds.length,
+      archivedPageIds,
     };
   }
-  const rowTitle = `${displaySyncedAt} · ${projectId} · ${boardData.currentTask || '未命名任务'}`;
+
+  if (latestProjectPage) {
+    const refreshProperties = buildRowProperties({
+      titlePropertyName,
+      rowTitle: buildProjectRowTitle(projectId, normalizedBoardData),
+      projectId,
+      snapshotKey,
+      status,
+      rootPageUrl,
+      reviewPageUrl,
+      executionDocUrl,
+      memoryPageUrl,
+      latestSummary: normalizedLatestSummary,
+      syncedAt: displaySyncedAt,
+      projectUpdatedAt: displayProjectUpdatedAt,
+      syncedAtIso,
+      boardData: normalizedBoardData,
+    });
+
+    delete refreshProperties['项目 ID'];
+
+    await updatePageProperties({
+      apiKey,
+      pageId: latestProjectPage.id,
+      properties: refreshProperties,
+      baseUrl,
+      notionVersion,
+    });
+
+    await syncReviewMarkdownToNotion({
+      apiKey,
+      pageId: latestProjectPage.id,
+      markdown: historyMarkdown,
+      baseUrl,
+      notionVersion,
+    });
+
+    const archivedPageIds = await archiveOlderProjectPages();
+
+    return {
+      created: false,
+      skipped: false,
+      updated: true,
+      reason: 'latest_project_row_updated',
+      pageId: latestProjectPage.id,
+      url: latestProjectPage.url || notionPageUrlFromId(latestProjectPage.id),
+      archivedCount: archivedPageIds.length,
+      archivedPageIds,
+    };
+  }
+
+  const rowTitle = buildProjectRowTitle(projectId, normalizedBoardData);
   const properties = buildRowProperties({
     titlePropertyName,
     rowTitle,
@@ -822,11 +960,11 @@ export async function syncProjectIndexRow({
     reviewPageUrl,
     executionDocUrl,
     memoryPageUrl,
-    latestSummary,
+    latestSummary: normalizedLatestSummary,
     syncedAt: displaySyncedAt,
     projectUpdatedAt: displayProjectUpdatedAt,
     syncedAtIso,
-    boardData,
+    boardData: normalizedBoardData,
   });
 
   const page = await createDatabaseRow({
@@ -876,12 +1014,19 @@ export async function dedupeProjectIndexRows({
     }),
   );
 
-  const archivedPageIds = [];
-  let previousKey = null;
-
+  const pagesByProject = new Map();
   for (const page of pages) {
-    const currentKey = pageCheckpointKey(page);
-    if (previousKey && currentKey === previousKey) {
+    const key = pageProjectId(page) || page.id;
+    if (!pagesByProject.has(key)) {
+      pagesByProject.set(key, []);
+    }
+    pagesByProject.get(key).push(page);
+  }
+
+  const archivedPageIds = [];
+  for (const projectPages of pagesByProject.values()) {
+    const [, ...olderPages] = projectPages;
+    for (const page of olderPages) {
       await archivePage({
         apiKey,
         pageId: page.id,
@@ -889,9 +1034,7 @@ export async function dedupeProjectIndexRows({
         notionVersion,
       });
       archivedPageIds.push(page.id);
-      continue;
     }
-    previousKey = currentKey;
   }
 
   return {

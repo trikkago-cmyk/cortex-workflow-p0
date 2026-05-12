@@ -48,7 +48,10 @@ Operational hardening already in place:
 ## Key Docs
 
 - [Protocol](./PROTOCOL.md)
+- [Decision And Async Collaboration Workflow](./docs/cortex-decision-and-async-collaboration-workflow.md)
+- [Collaboration Compounding Loop](./docs/cortex-collaboration-compounding-loop.md)
 - [Notion Custom Agents Collaboration](./docs/notion-custom-agents-collaboration.md)
+- [Notion Workspace Cutover Checklist](./docs/notion-workspace-cutover-checklist.md)
 - [MVP Readiness](./docs/prj-cortex-mvp-readiness.md)
 - [External Agent Onboarding](./docs/external-agent-onboarding.md)
 - [Memory Extraction Plan](./docs/cortex-vnext-memory-extraction-plan.md)
@@ -251,7 +254,28 @@ npm run agent:setup-bundle -- --project PRJ-cortex
 - 本地 `cortex-custom-agent-mcp` 是否健康
 - `/notion/custom-agent/context` 是否正常
 - 当前是否已经配置可用的公网 HTTPS MCP URL
+- 如果你传入 `--target-page-url`，它还会检查这个新页面是否已经落在 `PRJ-cortex` 当前 page scope 内
 - Notion 里该填哪些 trigger、tools、Header
+
+例如，要检查一个新的 Notion workspace 根页是否已经具备接入条件：
+
+```bash
+npm run agent:setup-bundle -- \
+  --project PRJ-cortex \
+  --target-page-url "https://www.notion.so/Cortex-35beb0c2e3f780309d79ddb2bd3c44b6?source=copy_link"
+```
+
+如果它返回 `target_page_out_of_scope`，说明即使 MCP 和页面分享都补好了，当前这棵新页面树也还没被 `PRJ-cortex` 接管；这时要先跑一次：
+
+```bash
+npm run notion:diagnose -- "https://www.notion.so/Cortex-35beb0c2e3f780309d79ddb2bd3c44b6?source=copy_link"
+```
+
+确认 token 能访问后，再执行：
+
+```bash
+npm run notion:bootstrap -- "https://www.notion.so/Cortex-35beb0c2e3f780309d79ddb2bd3c44b6?source=copy_link"
+```
 
 如果只是临时托底，才用本地 stub：
 
@@ -314,10 +338,10 @@ npm run agent:onboarding-smoke -- \
 NOTION_API_KEY=ntn_xxx NOTION_PROJECT_INDEX_DATABASE_ID=your_db_id npm run notion:sync-all
 ```
 
-项目索引默认按 checkpoint 去重。
-如果当前任务 / 核心进展 / 风险状态 / 下一步没有形成新 checkpoint，`project-index:notion-sync` 会直接跳过，不再新增一行。
+项目索引默认每个项目只保留最新一行。
+`project-index:notion-sync` 会原地刷新该项目的状态列，不再把每次 checkpoint 都摊成主表新行。
 
-如果历史里已经堆出了连续重复 checkpoint，可以直接清理：
+如果历史里已经堆出了旧项目行，可以直接清理，只保留每个项目最新一行：
 
 ```bash
 NOTION_API_KEY=ntn_xxx NOTION_PROJECT_INDEX_DATABASE_ID=your_db_id npm run project-index:dedupe
@@ -769,8 +793,8 @@ curl -X POST http://127.0.0.1:19100/webhook/notion-custom-agent \
     "page_id": "page-001",
     "discussion_id": "discussion-001",
     "comment_id": "comment-001",
-    "body": "@Cortex Router 把当前 P0 阻塞整理后继续推进",
-    "invoked_agent": "Cortex Router",
+    "body": "@Cortex 把当前 P0 阻塞整理后继续推进",
+    "invoked_agent": "Cortex",
     "owner_agent": "agent-router",
     "source_url": "notion://page/page-001/discussion/discussion-001/comment/comment-001"
   }'
@@ -844,7 +868,7 @@ npm run memory:notion-sync
 
 现在的协作入口固定为：
 
-- Notion 内 `@Cortex Router` 或评论触发 `Custom Agent`
+- Notion 内 `@Cortex` 或评论触发 `Custom Agent`
 - Custom Agent 调用 `/webhook/notion-custom-agent`
 - Cortex 继续在本地维护 `command / decision / checkpoint / memory`
 

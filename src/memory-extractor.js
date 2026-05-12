@@ -23,8 +23,8 @@ function buildSource(raw) {
     sourceType: raw.sourceType,
     sourceRef: raw.sourceRef,
     sourceUrl: raw.sourceUrl,
-    quoteText: raw.quoteText || raw.text || raw.summary || raw.title || raw.question || null,
-    summary: raw.summary || raw.reason || raw.title || raw.question || null,
+    quoteText: raw.sourceQuoteText || raw.quoteText || raw.text || raw.summary || raw.title || raw.question || null,
+    summary: raw.sourceSummary || raw.summary || raw.reason || raw.title || raw.question || null,
     evidence: raw.evidence || raw.payload || {},
   };
 }

@@ -34,7 +34,7 @@ test('buildProjectIndexSummary composes key project signals', () => {
 
   assert.equal(
     summary,
-    '状态：active；当前任务：Cortex P0 执行内核收口；红灯：1；黄灯：2；最近完成：Notion 评论链路已验证。；下一步：继续推进项目索引同步。',
+    '红灯待拍板：1 项待决策',
   );
 });
 
@@ -128,6 +128,8 @@ test('mergeBoardDataWithExecutionDoc prefers concise execution doc sections', ()
     riskPoint: '接口尚未整理。',
     greenAction: '完成清理',
     nextStep: '继续压缩结构',
+    redCount: 0,
+    yellowCount: 0,
   });
 });
 
@@ -159,6 +161,8 @@ test('mergeBoardDataWithExecutionDoc supports compact bullet summary format', ()
     riskPoint: '等真实 handler',
     greenAction: '已补 smoke 脚本',
     nextStep: '接真实 handler',
+    redCount: 0,
+    yellowCount: 0,
   });
 });
 
@@ -295,7 +299,7 @@ test('syncProjectIndexRow creates a new checkpoint row and writes snapshot body'
     reviewPageUrl: 'https://www.notion.so/review',
     executionDocUrl: 'https://www.notion.so/execution',
     memoryPageUrl: 'https://www.notion.so/memory',
-    latestSummary: '状态：active；当前任务：收口工作台',
+    latestSummary: '已推进：已补 executor worker',
     updatedAt: '2026-03-25T08:00:00.000Z',
     boardData: {
       currentTask: '收口工作台',
@@ -317,7 +321,8 @@ test('syncProjectIndexRow creates a new checkpoint row and writes snapshot body'
   assert.equal(patchCalls.length, 2);
   assert.equal(postCalls.length, 1);
   assert.equal(postCalls[0].url, '/v1/pages');
-  assert.match(postCalls[0].body.properties.Name.title[0].text.content, /^2026-03-25 16:30:00 · PRJ-cortex · 收口工作台/);
+  assert.equal(postCalls[0].body.properties.Name.title[0].text.content, 'PRJ-cortex · 收口工作台');
+  assert.equal(postCalls[0].body.properties['最新摘要'].rich_text[0].text.content, '已推进：已补 executor worker');
   assert.equal(postCalls[0].body.properties['更新时间'].rich_text[0].text.content, '2026-03-25 16:30:00（本地同步）');
   assert.equal(postCalls[0].body.properties['项目更新时间'].rich_text[0].text.content, '2026-03-25 16:00:00');
   assert.match(postCalls[0].body.properties['同步键'].rich_text[0].text.content, /^checkpoint:/);
@@ -366,6 +371,7 @@ test('syncProjectIndexRow skips duplicate sync when latest checkpoint is unchang
             '执行文档': { id: 'execution-page', type: 'url' },
             '协作记忆': { id: 'memory-page', type: 'url' },
             '项目 ID': { id: 'project-id', type: 'rich_text' },
+            项目: { id: 'project', type: 'select' },
             同步键: { id: 'sync-key', type: 'rich_text' },
             '最新摘要': { id: 'latest-summary', type: 'rich_text' },
             '更新时间': { id: 'updated-at', type: 'rich_text' },
@@ -400,7 +406,7 @@ test('syncProjectIndexRow skips duplicate sync when latest checkpoint is unchang
               properties: {
                 Name: {
                   type: 'title',
-                  title: [{ plain_text: '2026-03-25 16:30:00 · PRJ-cortex · 收口工作台' }],
+                  title: [{ plain_text: 'PRJ-cortex · 收口工作台' }],
                 },
                 状态: {
                   type: 'select',
@@ -432,7 +438,7 @@ test('syncProjectIndexRow skips duplicate sync when latest checkpoint is unchang
                 },
                 '最新摘要': {
                   type: 'rich_text',
-                  rich_text: [{ plain_text: '状态：active；当前任务：收口工作台' }],
+                  rich_text: [{ plain_text: '已推进：已补 executor worker' }],
                 },
                 '项目更新时间': {
                   type: 'rich_text',
@@ -495,7 +501,7 @@ test('syncProjectIndexRow skips duplicate sync when latest checkpoint is unchang
     reviewPageUrl: 'https://www.notion.so/review',
     executionDocUrl: 'https://www.notion.so/execution',
     memoryPageUrl: 'https://www.notion.so/memory',
-    latestSummary: '状态：active；当前任务：收口工作台',
+    latestSummary: '已推进：已补 executor worker',
     updatedAt: '2026-03-25T08:00:00.000Z',
     boardData: {
       currentTask: '收口工作台',
@@ -557,6 +563,7 @@ test('syncProjectIndexRow refreshes in-place when checkpoint is unchanged but su
             '执行文档': { id: 'execution-page', type: 'url' },
             '协作记忆': { id: 'memory-page', type: 'url' },
             '项目 ID': { id: 'project-id', type: 'rich_text' },
+            项目: { id: 'project', type: 'select' },
             同步键: { id: 'sync-key', type: 'rich_text' },
             '最新摘要': { id: 'latest-summary', type: 'rich_text' },
             '更新时间': { id: 'updated-at', type: 'rich_text' },
@@ -585,7 +592,7 @@ test('syncProjectIndexRow refreshes in-place when checkpoint is unchanged but su
               properties: {
                 Name: {
                   type: 'title',
-                  title: [{ plain_text: '2026-03-25 16:30:00 · PRJ-cortex · 收口工作台' }],
+                  title: [{ plain_text: 'PRJ-cortex · 收口工作台' }],
                 },
                 状态: {
                   type: 'select',
@@ -698,7 +705,7 @@ test('syncProjectIndexRow refreshes in-place when checkpoint is unchanged but su
     reviewPageUrl: 'https://www.notion.so/review',
     executionDocUrl: 'https://www.notion.so/execution',
     memoryPageUrl: 'https://www.notion.so/memory',
-    latestSummary: '状态：active；当前任务：收口工作台；下一步：继续推进项目索引同步。',
+    latestSummary: '已推进：已补 executor worker',
     updatedAt: '2026-03-25T08:10:00.000Z',
     boardData: {
       currentTask: '收口工作台',
@@ -721,11 +728,221 @@ test('syncProjectIndexRow refreshes in-place when checkpoint is unchanged but su
   assert.equal(requests.filter((request) => request.method === 'PATCH' && request.url === '/v1/pages/page-existing-002').length, 1);
   assert.equal(
     requests.find((request) => request.method === 'PATCH' && request.url === '/v1/pages/page-existing-002').body.properties['最新摘要'].rich_text[0].text.content,
-    '状态：active；当前任务：收口工作台；下一步：继续推进项目索引同步。',
+    '已推进：已补 executor worker',
   );
 });
 
-test('dedupeProjectIndexRows archives consecutive duplicate checkpoints and keeps checkpoint transitions', async (t) => {
+test('syncProjectIndexRow updates the latest project row in place when checkpoint advances', async (t) => {
+  const requests = [];
+  const previousCheckpointKey = buildProjectCheckpointKey({
+    projectId: 'PRJ-cortex',
+    status: 'active',
+    boardData: {
+      currentTask: '旧任务',
+      currentProgress: '旧进展',
+      riskStatus: '黄灯',
+      riskPoint: '旧风险',
+      greenAction: '旧推进',
+      nextStep: '旧下一步',
+    },
+  });
+
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+
+    const bodyText = Buffer.concat(chunks).toString('utf8');
+    requests.push({
+      method: req.method,
+      url: req.url,
+      body: bodyText ? JSON.parse(bodyText) : null,
+    });
+
+    if (req.method === 'GET' && req.url === '/v1/databases/db-001') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          id: 'db-001',
+          properties: {
+            Name: { id: 'title', type: 'title', title: {} },
+            状态: { id: 'status', type: 'select' },
+            '根页面': { id: 'root-page', type: 'url' },
+            '总览页': { id: 'review-page', type: 'url' },
+            '执行文档': { id: 'execution-page', type: 'url' },
+            '协作记忆': { id: 'memory-page', type: 'url' },
+            '项目 ID': { id: 'project-id', type: 'rich_text' },
+            项目: { id: 'project', type: 'select' },
+            同步键: { id: 'sync-key', type: 'rich_text' },
+            '最新摘要': { id: 'latest-summary', type: 'rich_text' },
+            '更新时间': { id: 'updated-at', type: 'rich_text' },
+            '项目更新时间': { id: 'project-updated-at', type: 'rich_text' },
+            同步时间: { id: 'sync-time', type: 'date' },
+            当前任务: { id: 'current-task', type: 'rich_text' },
+            当前进展: { id: 'current-progress', type: 'rich_text' },
+            风险状态: { id: 'risk-status', type: 'select' },
+            风险点: { id: 'risk-point', type: 'rich_text' },
+            已推进: { id: 'green-action', type: 'rich_text' },
+            下一步: { id: 'next-step', type: 'rich_text' },
+          },
+        }),
+      );
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/v1/databases/db-001/query') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          results: [
+            {
+              id: 'page-existing-003',
+              url: 'https://www.notion.so/page-existing-003',
+              properties: {
+                Name: {
+                  type: 'title',
+                  title: [{ plain_text: 'PRJ-cortex · 旧任务' }],
+                },
+                状态: {
+                  type: 'select',
+                  select: { name: 'active' },
+                },
+                '根页面': {
+                  type: 'url',
+                  url: 'https://www.notion.so/root',
+                },
+                '总览页': {
+                  type: 'url',
+                  url: 'https://www.notion.so/review',
+                },
+                '执行文档': {
+                  type: 'url',
+                  url: 'https://www.notion.so/execution',
+                },
+                '协作记忆': {
+                  type: 'url',
+                  url: 'https://www.notion.so/memory',
+                },
+                '项目 ID': {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: 'PRJ-cortex' }],
+                },
+                同步键: {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: `checkpoint:${previousCheckpointKey}` }],
+                },
+                '最新摘要': {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: '黄灯关注：旧风险' }],
+                },
+                '项目更新时间': {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: '2026-03-25 16:00:00' }],
+                },
+                同步时间: {
+                  type: 'date',
+                  date: { start: '2026-03-25T08:30:00.000Z' },
+                },
+                当前任务: {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: '旧任务' }],
+                },
+                当前进展: {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: '旧进展' }],
+                },
+                风险状态: {
+                  type: 'select',
+                  select: { name: '黄灯' },
+                },
+                风险点: {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: '旧风险' }],
+                },
+                已推进: {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: '旧推进' }],
+                },
+                下一步: {
+                  type: 'rich_text',
+                  rich_text: [{ plain_text: '旧下一步' }],
+                },
+              },
+            },
+          ],
+          has_more: false,
+          next_cursor: null,
+        }),
+      );
+      return;
+    }
+
+    if (req.method === 'PATCH' && req.url === '/v1/pages/page-existing-003') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id: 'page-existing-003' }));
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/v1/blocks/page-existing-003/children?page_size=100') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ results: [] }));
+      return;
+    }
+
+    if (req.method === 'PATCH' && req.url === '/v1/blocks/page-existing-003/children') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ results: [] }));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const result = await syncProjectIndexRow({
+    apiKey: 'notion-secret',
+    databaseId: 'db-001',
+    projectId: 'PRJ-cortex',
+    status: 'active',
+    rootPageUrl: 'https://www.notion.so/root',
+    reviewPageUrl: 'https://www.notion.so/review',
+    executionDocUrl: 'https://www.notion.so/execution',
+    memoryPageUrl: 'https://www.notion.so/memory',
+    latestSummary: '黄灯关注：等真实 handler',
+    updatedAt: '2026-03-25T08:10:00.000Z',
+    boardData: {
+      currentTask: '收口工作台',
+      currentProgress: '已补 executor worker',
+      riskStatus: '黄灯',
+      riskPoint: '等真实 handler',
+      greenAction: '完成自动执行 smoke',
+      nextStep: '继续接真实 handler',
+    },
+    clock: () => new Date('2026-03-25T08:45:00.000Z'),
+    baseUrl,
+  });
+
+  assert.equal(result.created, false);
+  assert.equal(result.skipped, false);
+  assert.equal(result.updated, true);
+  assert.equal(result.reason, 'latest_project_row_updated');
+  assert.equal(result.pageId, 'page-existing-003');
+  assert.equal(requests.filter((request) => request.url === '/v1/pages').length, 0);
+  assert.equal(requests.filter((request) => request.method === 'PATCH' && request.url === '/v1/pages/page-existing-003').length, 1);
+  assert.equal(
+    requests.find((request) => request.method === 'PATCH' && request.url === '/v1/pages/page-existing-003').body.properties.Name.title[0].text.content,
+    'PRJ-cortex · 收口工作台',
+  );
+});
+
+test('dedupeProjectIndexRows archives older project rows and keeps the newest one visible', async (t) => {
   const requests = [];
   const server = http.createServer(async (req, res) => {
     const chunks = [];
@@ -809,9 +1026,9 @@ test('dedupeProjectIndexRows archives consecutive duplicate checkpoints and keep
       return;
     }
 
-    if (req.method === 'PATCH' && req.url === '/v1/pages/page-latest-002') {
+    if (req.method === 'PATCH' && (req.url === '/v1/pages/page-latest-002' || req.url === '/v1/pages/page-old-unique')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ id: 'page-latest-002', archived: true }));
+      res.end(JSON.stringify({ id: req.url.endsWith('page-old-unique') ? 'page-old-unique' : 'page-latest-002', archived: true }));
       return;
     }
 
@@ -833,6 +1050,6 @@ test('dedupeProjectIndexRows archives consecutive duplicate checkpoints and keep
   });
 
   assert.equal(result.scanned, 3);
-  assert.equal(result.archivedCount, 1);
-  assert.deepEqual(result.archivedPageIds, ['page-latest-002']);
+  assert.equal(result.archivedCount, 2);
+  assert.deepEqual(result.archivedPageIds, ['page-latest-002', 'page-old-unique']);
 });

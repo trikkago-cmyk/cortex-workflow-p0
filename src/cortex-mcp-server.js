@@ -1,13 +1,48 @@
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod/v4';
 
 const DEFAULT_CORTEX_BASE_URL = 'http://127.0.0.1:19100';
 const DEFAULT_PROJECT_ID = 'PRJ-cortex';
 const DEFAULT_MCP_PORT = 19101;
 const DEFAULT_MCP_HOST = '127.0.0.1';
+const SSE_PROXY_FLUSH_PADDING_BYTES = 2048;
+const DEFAULT_MCP_ACCESS_LOG = resolve(process.cwd(), 'tmp', 'automation-runtime', 'cortex-custom-agent-mcp-access.log');
+
+class ProxyFlushSSEServerTransport extends SSEServerTransport {
+  async start() {
+    if (this._sseResponse) {
+      throw new Error('SSEServerTransport already started! If using Server class, note that connect() calls start() automatically.');
+    }
+
+    this.res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const endpointUrl = new URL(this._endpoint, 'http://localhost');
+    endpointUrl.searchParams.set('sessionId', this._sessionId);
+    const relativeUrlWithSession = endpointUrl.pathname + endpointUrl.search + endpointUrl.hash;
+
+    this.res.write(
+      `event: endpoint\ndata: ${relativeUrlWithSession}\n\n: ${' '.repeat(SSE_PROXY_FLUSH_PADDING_BYTES)}\n\n`,
+    );
+    this._sseResponse = this.res;
+    this.res.on('close', () => {
+      this._sseResponse = undefined;
+      this.onclose?.();
+    });
+  }
+}
 
 class CortexHttpError extends Error {
   constructor(message, { status, payload, url }) {
@@ -32,6 +67,30 @@ function parseList(value) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function writeAccessLog(entry, logPath = process.env.CORTEX_MCP_ACCESS_LOG || DEFAULT_MCP_ACCESS_LOG) {
+  try {
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`, 'utf8');
+  } catch {
+    // Access logging is best-effort and must never break MCP traffic.
+  }
+}
+
+function summarizeJsonRpcBody(body) {
+  if (!body || typeof body !== 'object') {
+    return {};
+  }
+
+  return {
+    jsonrpc_method: typeof body.method === 'string' ? body.method : null,
+    jsonrpc_id_present: body.id !== undefined,
+    tool_name:
+      body.method === 'tools/call' && typeof body.params?.name === 'string'
+        ? body.params.name
+        : null,
+  };
 }
 
 export function normalizeBaseUrl(baseUrl = DEFAULT_CORTEX_BASE_URL) {
@@ -232,7 +291,7 @@ export function createCortexMcpServer({ baseUrl = DEFAULT_CORTEX_BASE_URL } = {}
         target_id: z.string().optional().describe('Optional Notion block/page id for the exact target.'),
         context_quote: z.string().optional().describe('Relevant quoted page text around the comment.'),
         anchor_block_id: z.string().optional().describe('Optional Notion block id anchoring the discussion.'),
-        invoked_agent: z.string().optional().describe('Notion Custom Agent display name, for example Cortex Router.'),
+        invoked_agent: z.string().optional().describe('Notion Custom Agent display name, for example Cortex.'),
         owner_agent: z.string().optional().describe('Cortex owner agent to assign the command/decision to.'),
         route_to: z.string().optional().describe('Alias for owner_agent when the human routes to a specific agent.'),
         source_url: z.string().optional().describe('Stable Notion source URL for traceability.'),
@@ -316,7 +375,7 @@ export function createCortexMcpApp({
   baseUrl = process.env.CORTEX_BASE_URL || DEFAULT_CORTEX_BASE_URL,
   host = process.env.CORTEX_MCP_HOST || DEFAULT_MCP_HOST,
   allowedHosts = parseList(process.env.CORTEX_MCP_ALLOWED_HOSTS),
-  bearerToken = process.env.CORTEX_MCP_BEARER_TOKEN || '',
+  bearerToken = '',
 } = {}) {
   const appOptions = {
     host,
@@ -327,6 +386,54 @@ export function createCortexMcpApp({
   }
 
   const app = createMcpExpressApp(appOptions);
+  const transports = new Map();
+
+  app.use((req, res, next) => {
+    writeAccessLog({
+      method: req.method,
+      path: req.path,
+      host: req.header('host') || null,
+      user_agent: req.header('user-agent') || null,
+      accept: req.header('accept') || null,
+      has_authorization: Boolean(req.header('authorization')),
+      session_id_present: Boolean(req.header('mcp-session-id')),
+      ...summarizeJsonRpcBody(req.body),
+    });
+    res.on('finish', () => {
+      writeAccessLog({
+        event: 'response',
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        session_id_present: Boolean(req.header('mcp-session-id')),
+        ...summarizeJsonRpcBody(req.body),
+      });
+    });
+    next();
+  });
+
+  function registerTransport(sessionId, transport, server) {
+    transports.set(sessionId, { transport, server });
+  }
+
+  function clearTransport(sessionId) {
+    const entry = transports.get(sessionId);
+    if (!entry) {
+      return;
+    }
+
+    transports.delete(sessionId);
+    try {
+      entry.transport.close?.();
+    } catch {
+      // best-effort cleanup only
+    }
+    try {
+      entry.server.close?.();
+    } catch {
+      // best-effort cleanup only
+    }
+  }
 
   app.use((req, res, next) => {
     if (!bearerToken) {
@@ -355,21 +462,128 @@ export function createCortexMcpApp({
     });
   });
 
-  app.post('/mcp', async (req, res) => {
+  app.get('/mcp', async (req, res) => {
+    const sessionId = req.header('mcp-session-id');
+    if (sessionId) {
+      const entry = transports.get(sessionId);
+      if (entry?.transport instanceof StreamableHTTPServerTransport) {
+        try {
+          await entry.transport.handleRequest(req, res);
+        } catch (error) {
+          console.error('Error handling Cortex MCP streamable GET:', error);
+          if (!res.headersSent) {
+            res.status(500).send('Internal server error');
+          }
+        }
+        return;
+      }
+
+      if (entry) {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Bad Request: Session exists but uses a different transport protocol',
+          },
+          id: null,
+        });
+        return;
+      }
+
+      res.status(400).send('Invalid or missing session ID');
+      return;
+    }
+
+    const acceptHeader = String(req.header('accept') || '');
+    const shouldUseLegacySse = acceptHeader.includes('text/event-stream');
+
+    if (!shouldUseLegacySse) {
+      res.status(405).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Method not allowed. Use Streamable HTTP JSON-RPC POST requests.',
+        },
+        id: null,
+      });
+      return;
+    }
+
     const server = createCortexMcpServer({ baseUrl });
+    const transport = new ProxyFlushSSEServerTransport('/messages', res);
+    registerTransport(transport.sessionId, transport, server);
+    transport.onclose = () => {
+      clearTransport(transport.sessionId);
+    };
 
     try {
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-      });
-
       await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      clearTransport(transport.sessionId);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32603,
+            message: 'Internal server error',
+          },
+          id: null,
+        });
+      }
+    }
+  });
 
-      res.on('close', () => {
-        transport.close();
-        server.close();
-      });
+  app.post('/mcp', async (req, res) => {
+    try {
+      const sessionId = req.header('mcp-session-id');
+      let transport = null;
+
+      if (sessionId) {
+        const entry = transports.get(sessionId);
+        if (entry?.transport instanceof StreamableHTTPServerTransport) {
+          transport = entry.transport;
+        } else if (entry) {
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Bad Request: Session exists but uses a different transport protocol',
+            },
+            id: null,
+          });
+          return;
+        }
+      }
+
+      if (!transport) {
+        if (!isInitializeRequest(req.body)) {
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Bad Request: No valid session ID provided',
+            },
+            id: null,
+          });
+          return;
+        }
+
+        const server = createCortexMcpServer({ baseUrl });
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (initializedSessionId) => {
+            registerTransport(initializedSessionId, transport, server);
+          },
+        });
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            clearTransport(transport.sessionId);
+          }
+        };
+        await server.connect(transport);
+      }
+
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       console.error('Error handling Cortex MCP request:', error);
       if (!res.headersSent) {
@@ -385,15 +599,35 @@ export function createCortexMcpApp({
     }
   });
 
-  app.get('/mcp', (_req, res) => {
-    res.status(405).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32000,
-        message: 'Method not allowed. Use Streamable HTTP JSON-RPC POST requests.',
-      },
-      id: null,
-    });
+  app.post('/messages', async (req, res) => {
+    const sessionId = Array.isArray(req.query.sessionId) ? req.query.sessionId[0] : req.query.sessionId;
+    const entry = sessionId ? transports.get(String(sessionId)) : null;
+
+    if (!entry) {
+      res.status(400).send('No transport found for sessionId');
+      return;
+    }
+
+    if (!(entry.transport instanceof SSEServerTransport)) {
+      res.status(400).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Bad Request: Session exists but uses a different transport protocol',
+        },
+        id: null,
+      });
+      return;
+    }
+
+    try {
+      await entry.transport.handlePostMessage(req, res, req.body);
+    } catch (error) {
+      console.error('Error handling Cortex MCP legacy SSE message:', error);
+      if (!res.headersSent) {
+        res.status(500).send('Internal server error');
+      }
+    }
   });
 
   app.delete('/mcp', (_req, res) => {

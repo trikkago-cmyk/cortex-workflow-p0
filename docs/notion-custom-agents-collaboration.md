@@ -7,6 +7,22 @@
 `Notion Custom Agents` 是 Cortex 在 Notion 内异步协作的正式主路径。  
 旧的 `notion-loop` 评论轮询已经退出主 runtime，不再继续维护为并行模式。
 
+## 一个关键澄清
+
+这里不要再把 3 件事混为一谈：
+
+- `Custom Agent`：你在 Notion 里真正会 `@` 到的前台入口
+- `Connection`：这个 Custom Agent 在 `Tools & access -> Add connection` 里挂的执行连接
+- `Cortex`：连接后面真正负责落库、决策、memory、回执的执行内核
+
+所以：
+
+- 我们要的主路径是 `@Cortex`
+- 不是“换个名字继续本地轮询”
+- 也不是回到旧的 token integration 主写回链路
+
+如果 Notion UI 里出现 `Add connection`，那是在给 `Custom Agent` 挂能力，不等于在走旧 Integration 方案。
+
 ## 当前落地状态
 
 - `2026-04-29` 已在当前本机 Cortex runtime 上执行 `npm run agent:live-uat -- --template-project PRJ-cortex --project PRJ-cortex-live-uat-20260429 --agent agent-live-uat-runtime`
@@ -19,9 +35,9 @@
   - `receipt -> command done + checkpoint`
 - 同一轮验收里，red 场景产生的临时 outbox 已自动归档，`remaining_pending_count = 0`
 - `npm run runtime:soak -- --project PRJ-cortex --iterations 2 --interval-ms 500 --samples 1` 也已返回 `status = ready`
-- `npm run agent:setup-bundle -- --project PRJ-cortex` 已确认当前唯一 blocker 是 `public_mcp_url_missing`
+- `npm run agent:setup-bundle -- --project PRJ-cortex --target-page-url "<new-root-page>"` 现已能返回 `ready_for_notion_setup`
 - 现在剩下的不是 Cortex 侧 contract，而是 Notion UI 里的最后一段人工挂接：
-  - 把公网 MCP endpoint 挂到目标 `Custom Agent`
+  - 确认当前公网 MCP endpoint 仍然存活，并挂到目标 `Custom Agent`
   - 打开 trigger
   - 让 Notion agent 在 discussion 内真实回帖
 
@@ -29,7 +45,7 @@
 
 用户旅程：
 
-1. 你在 Notion 页面或评论中直接 `@Cortex Router`
+1. 你在 Notion 页面或评论中直接 `@Cortex`
 2. `Notion Custom Agent` 被原生触发
 3. Custom Agent 调用 Cortex MCP 工具获取上下文与写入动作
 4. Cortex 落库 `command / decision / checkpoint / memory`
@@ -156,7 +172,7 @@ flowchart LR
 
 ## P0 落地范围
 
-- 先用一个 `Cortex Router` Custom Agent 收口主协作入口
+- 先用一个名为 `Cortex` 的 Custom Agent 收口主协作入口
 - 先保留 Cortex 现有 `agent-router / agent-pm / agent-architect / agent-evaluator / agent-notion-worker`
 - 先不做多 Custom Agents 编排
 - 先不做开放式自然语言 agent orchestration
@@ -165,7 +181,7 @@ flowchart LR
 
 ### Phase 1：一个 Router Agent
 
-目标：Notion 里只配置一个 `Cortex Router` Custom Agent，所有评论和 mention 都先进入 Router。
+目标：Notion 里只配置一个名为 `Cortex` 的 Custom Agent，所有评论和 mention 都先进入同一个 Cortex 入口。
 
 详细配置清单与联调步骤见：
 
@@ -173,16 +189,17 @@ flowchart LR
 
 验收：
 
-- Notion comment 或 `@Cortex Router` 可以触发 agent。
+- Notion comment 或 `@Cortex` 可以触发 agent。
 - Router 能调用 `GET /notion/custom-agent/context`。
 - Router 能把事件写入 `POST /webhook/notion-custom-agent`。
 - Cortex 侧生成 command，并保留 `page_id / discussion_id / comment_id / owner_agent`。
 
 ### Phase 1 Notion 侧配置清单
 
-在 Notion 里，P0 先只落一个 `Cortex Router`：
+在 Notion 里，P0 先只落一个 `Cortex`：
 
-1. 创建一个 `Notion Custom Agent`，名称固定为 `Cortex Router`。
+1. 创建一个 `Notion Custom Agent`，推荐名称固定为 `Cortex`。
+   - `Router` 是它的内部职责，不必作为对外名字暴露给用户
 2. 打开两个触发器：
    - `The agent is mentioned in a page or comment`
    - `A comment is added to a page`
@@ -196,13 +213,13 @@ flowchart LR
    - `ingest_notion_comment`
    - `claim_next_command`
    - `submit_agent_receipt`
-5. Router 的 system prompt 不要写成开放式大总管，而要写成一个明确的事件路由器：
+5. Cortex 的 system prompt 不要写成开放式大总管，而要写成一个明确的事件路由器：
    - 先归类事件，再决定是否继续执行、在 Notion 线程内追问等待、或升级为红灯决策
    - 不把 Notion 当真相源
    - 所有 durable 状态都回 Cortex
 6. 当前阶段不配置第二个 Custom Agent。
    - 其他 agent 仍然是 Cortex 内部的 `owner_agent`
-   - Notion 里先只暴露 `Cortex Router` 这一个入口
+   - Notion 里先只暴露 `Cortex` 这一个入口
 7. 打开 `comment added` 触发器时，必须同时配置防回环。
    - agent 自己在 discussion 里的回复，不应该再次进入 Cortex 形成自触发循环
    - 最稳妥的做法是 payload 里显式带 `self_authored=true`
@@ -216,7 +233,7 @@ flowchart LR
 可以直接按这个结构去配置 Notion 侧说明：
 
 ```text
-You are Cortex Router, the single async entrypoint for Cortex collaboration in Notion.
+You are Cortex, the single async entrypoint for Cortex collaboration in Notion.
 
 Your job:
 1. Read the current page/comment context.
@@ -298,7 +315,7 @@ Rules:
   "discussion_id": "notion-discussion-id",
   "comment_id": "notion-comment-id",
   "body": "human instruction or review comment",
-  "invoked_agent": "Cortex Router",
+  "invoked_agent": "Cortex",
   "owner_agent": "agent-router",
   "source_url": "notion://page/notion-page-id/discussion/notion-discussion-id/comment/notion-comment-id"
 }
@@ -404,7 +421,7 @@ Webhook 响应约定：
    - 预期：落 command，owner_agent 为 router 或明确指定 agent，后续进入执行
 4. Yellow case
    - 在 Notion 评论一个需要澄清但不阻塞的问题
-   - 预期：Router 在当前讨论线程说明待确认点，并把状态写到 review 文档，不触发本地通知
+   - 预期：Cortex 在当前讨论线程说明待确认点，并把状态写到 review 文档，不触发本地通知
 5. Red case
    - 在 Notion 评论一个高风险决策，例如“直接覆盖现有对外文档结构”
    - 预期：Cortex 创建 decision request，并走本地系统通知

@@ -1,6 +1,27 @@
 # Notion Custom Agent 真机验收清单
 
-最近更新：2026-04-29
+最近更新：2026-05-12
+
+## 2026-05-12 评论执行闭环补丁
+
+今天的真实结论要说清楚：Notion Custom Agent 可以 reaction，但不一定稳定调用 MCP tool。为了避免评论停在 Notion UI 层，Cortex 已新增 token-based `notion-comment-poller` 作为桥接入口：
+
+- 轮询目标：默认只扫当前项目的 `notion_scan_page_id` / `notion_review_page_id`
+- 去重策略：按 Notion `comment_id` 写入 `tmp/notion-comment-poller-state.json`
+- 自循环保护：通过 `/v1/users/me` 跳过 `codex` integration 自己写的评论
+- 摄入路径：直接 POST 到现有 `/webhook/notion-comment`
+- 执行路径：由现有 router / executor worker 继续派发，不新建第二套执行模型
+
+本轮重试的真实证据：
+
+- 漏掉的评论 `更新目前项目执行的最新动态到文档中` 已补摄入为 `CMD-20260512-009`
+- 修复前 router 误派给 `agent-pm`，只生成了 `TB-20260512-002`
+- 修复后同类“执行动态 / 进展 / 状态 -> 文档”请求会路由到 `agent-notion-worker`
+- 已手动派生重试命令 `CMD-20260512-017`
+- `CMD-20260512-017` 已完成，`result_summary = agent-notion-worker executed action: sync notion surfaces`
+- Notion 同一 discussion 已收到 `codex` integration 回帖：`已执行：Cortex 已把当前项目执行动态同步到 Notion 执行文档。`
+- 当前 runtime 已重启并拉起 `11 / 11` 受管进程，其中包含 `notion-comment-poller`
+- 全量测试 `npm test` 已通过：`278 / 278`
 
 ## 当前结论
 
@@ -10,13 +31,53 @@
 - `POST /webhook/notion-custom-agent`
 - `receipt / checkpoint / docs_only`
 
-当前状态已经从 “MCP 鉴权失败” 升级为：
+当前状态已经从 “完全卡在 MCP 鉴权失败” 升级为：
 
-- `Notion MCP 已重新连通`
-- 当前 Codex 会话已经可以 fetch 你的 `Cortex` 根页和子页
+- `Notion MCP` 已经至少在一个可用子 agent 上下文里重新连通，并完成真实读写
+- 当前主线程 Codex 会话仍可能返回 `Auth required`
 - Cortex 侧已新增 `cortex-custom-agent-mcp` 工具门面
 - 已新增 `npm run agent:live-uat`，可以对当前 Cortex runtime 直接跑一轮 6 场景 live UAT
-- 接下来真正剩下的是 `Notion UI trigger / tool connection / in-thread reply` 的最后人工挂接，而不是 OAuth 本身
+- 接下来真正剩下的是 `主会话授权态收口 + Notion UI trigger / tool connection / in-thread reply`，而不是 OAuth 或 Cortex transport 本身
+
+## 2026-05-09 最新联调结论
+
+这轮多补一条真实结论，避免后面继续在错误方向上撞：
+
+- Cortex MCP server 现在已经同时支持：
+  - `POST /mcp` 的 Streamable HTTP
+  - `GET /mcp` + `POST /messages?sessionId=...` 的 legacy SSE
+- 本地与单测都已验证通过：
+  - `node --test test/cortex-mcp-server.test.js` 为 `5 / 5`
+  - 本地 `curl -H 'Accept: text/event-stream' http://127.0.0.1:19101/mcp` 返回 `200`
+- 真实卡点已经从 “MCP server 不支持 SSE” 收敛为 “某些临时 tunnel 会把 SSE 长连接打成 408”
+
+当前已证实：
+
+- `https://tricky-paws-sit.loca.lt/mcp` 会返回 `408 Request Timeout`
+- `https://8250ceced2bf93.lhr.life/mcp` 可以返回 `200 text/event-stream`
+
+所以这轮真实状态应该表述为：
+
+- Cortex 侧 MCP transport 已修好
+- 公网临时入口已切到可用的新地址
+- Arc 里的 Notion `Add custom MCP` 弹窗已填好参数
+- 当前只差最后一次人工确认后点击 `Connect / Save`
+
+再补一条今天确认过的 OAuth 结论：
+
+- `codex mcp login notion` 必须在授权页里手动选中目标 workspace
+- 这次已明确切到 `rholland411’s Space`，不是之前误选的 `Sijia Yu's Notion Free Plan`
+- 浏览器里完成 `Authentication complete` 之后，当前运行中的 Codex / MCP 会话不一定立刻热重载
+- 如果工具调用仍返回 `Auth required`，优先把它定义为“当前会话未热更新”，先重跑 `codex mcp login notion`，必要时重启 Codex / 新开线程，而不是回头怀疑 Cortex MCP server
+
+本轮需要把“谁能读、谁还不能读”说准确：
+
+- 可用子 agent 已成功在真实 workspace 下创建并回读同步页
+  - 页面标题：`Cortex P0 工作台同步 - 2026-05-09`
+  - 页面 URL：`https://www.notion.so/35beb0c2e3f781469134f60de78b9a33`
+- 当前主线程里再次调用 `notion_get_users(self)` 仍然返回 `Auth required`
+- 这说明当前问题已经不是 OAuth 没走通，而更像是 `Codex 主线程 / 子 agent` 的授权态没有热更新到同一上下文
+- 如果后续仍然出现“子 agent 能读写，但主线程或 Notion 里不能直接 @Cortex” 的问题，排查重点应该放回 `主会话 auth 热更新 / Custom Agent connection / trigger / tool binding / discussion reply`，而不是再次怀疑 Cortex MCP server
 
 ## 2026-04-29 当前结论
 
@@ -169,7 +230,7 @@ npm run agent:live-uat -- \
 
 ### Notion 侧
 
-- 已创建 `Cortex Router` Custom Agent
+- 已创建 `Cortex` Custom Agent
 - 已打开：
   - `The agent is mentioned in a page or comment`
   - `A comment is added to a page`
@@ -191,7 +252,7 @@ npm run agent:live-uat -- \
 
 评论示例：
 
-> @Cortex Router 把当前 P0 阻塞整理后继续推进
+> @Cortex 把当前 P0 阻塞整理后继续推进
 
 预期：
 
@@ -273,9 +334,49 @@ npm run agent:live-uat -- \
 
 - `command.status -> done`
 - `checkpoint` 新增
-- `reply_id = null`
-- `notion_feedback_mode = docs_only`
-- Notion 侧 agent 基于最新 `receipt / checkpoint` 回显到当前 discussion
+- 如果 `NOTION_DISCUSSION_WRITEBACK=1` 且 `NOTION_API_KEY` 对当前 discussion 可见：同一 Notion discussion 出现自动回复
+- 如果 token-based integration 没有页面权限：任务仍完成，`receipt / checkpoint` 仍落库，但 reply writeback 记录为失败或 `docs_only`
+
+### 2026-05-11 真机追踪结论
+
+本轮真实评论已经进入 Cortex：
+
+- Notion MCP 调用 `ingest_notion_comment` 成功，HTTP 200
+- `CMD-20260511-017` 路由到 `agent-notion-worker`
+- `CMD-20260511-018` 完成，`status=done`
+- 后续 smoke `CMD-20260511-021` 已触发新的 discussion writeback 代码路径
+
+当前没有评论回复的根因已经收敛为 token-based writeback 权限/可用性，而不是 Custom Agent MCP 未触发：
+
+- `NOTION_DISCUSSION_WRITEBACK=1` 已开启
+- executor worker 已尝试调用 Notion comments API
+- Notion comments API 返回 `503 service_unavailable`
+- `npm run notion:diagnose -- "<target-page-url>"` 对同一目标页返回 `page_not_shared`
+- 目标页需要额外共享给 `.env.local` 中 `NOTION_API_KEY` 对应的 integration（当前诊断显示 integration 名称为 `codex`），否则 Cortex 只能收到/执行评论，不能用 token 代写同一 discussion 回复
+
+### 2026-05-12 回写闭环验收通过
+
+已完成新的 token-based writeback 授权：
+
+- 新 `codex` internal integration 已安装在 `rholland411’s Space`
+- `.env.local` 已更新为新 `NOTION_API_KEY`
+- 目标页已 Add connection 到 `codex`
+- `npm run notion:diagnose -- "https://www.notion.so/35beb0c2e3f781469134f60de78b9a33"` 返回 `status=ready`
+- runtime 已重启并加载新 token
+
+真实 smoke：
+
+- 本地模拟 Notion comment 生成 `CMD-20260512-001`
+- `agent-notion-worker` 执行完成，`status=done`，`receipt_count=1`
+- 同一 Notion discussion 已出现 Cortex API 回帖：
+  - `已收到，这条 Notion 评论已经成功回流到 Cortex 执行链路，后续会继续按当前路由推进。`
+  - 回帖时间：`2026-05-12T06:43:01.765Z`
+
+当前主路径结论：
+
+- `Notion Custom Agent + MCP` 负责入口
+- `NOTION_API_KEY + NOTION_DISCUSSION_WRITEBACK=1` 负责稳定写回
+- 真实链路 `comment -> MCP ingest -> command -> worker -> receipt -> Notion discussion reply` 已跑通
 
 ## 每轮验收要抓的证据
 

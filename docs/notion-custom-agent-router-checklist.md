@@ -1,6 +1,27 @@
 # Notion Custom Agent Router Checklist
 
-最近更新：2026-04-27
+最近更新：2026-05-12
+
+## 2026-05-12 当前真实状态
+
+Custom Agent 主路径仍然保留，但不能再把它当成唯一触发器。今天真机验证发现：Notion 评论可能只触发 reaction，不触发 MCP `ingest_notion_comment`，因此 Cortex 侧需要一个稳定的 token-based comment bridge 兜底。
+
+当前已经完成：
+
+- 新增 `src/notion-comment-poller.js`
+- `automation:start` 默认会在 `NOTION_API_KEY + 当前项目 Notion page scope` 可用时拉起 `notion-comment-poller`
+- 默认只扫当前项目，避免旧项目未授权页面持续 404
+- 新评论按 `comment_id` 去重后进入 `/webhook/notion-comment`
+- `更新目前项目执行的最新动态到文档中` 这类请求已明确路由到 `agent-notion-worker`
+- `agent-notion-worker` 对这类请求会实际执行 `execution:notion-sync`
+
+验收证据：
+
+- 补摄入原评论：`CMD-20260512-009`
+- 纠正后执行命令：`CMD-20260512-017`
+- Notion discussion 已收到执行完成回帖
+- runtime 当前 `11 / 11` running，新增 `notion-comment-poller`
+- 全量测试 `npm test`：`278 / 278`
 
 ## 2026-04-29 当前根因结论
 
@@ -30,6 +51,59 @@ npm run agent:setup-bundle -- --project PRJ-cortex
 - Bearer 鉴权也已经准备好
 - 但 Notion 云端还没有一个能连进你这台机器的当前公网 MCP 地址
 
+如果你现在是要切一个新的 Notion workspace / 根页，不要只跑默认检查，要直接带上目标页面：
+
+```bash
+npm run agent:setup-bundle -- \
+  --project PRJ-cortex \
+  --target-page-url "https://www.notion.so/Cortex-35beb0c2e3f780309d79ddb2bd3c44b6?source=copy_link"
+```
+
+这会额外告诉你两件事：
+
+- 这个新页面有没有被当前 `PRJ-cortex` 的 page scope 接住
+- 现在卡住的是 `public_mcp_url_missing`、`local_mcp_unhealthy`，还是 `target_page_out_of_scope`
+
+还要记住一个经常混淆的点：
+
+- `Codex -> Notion MCP OAuth` 和 `NOTION_API_KEY` 是两条独立的权限链
+- 前者决定我能不能在当前会话里直接读到那个页面
+- 后者决定 `notion:bootstrap / notion:sync-all / memory:notion-sync / execution:notion-sync` 这些脚本能不能写进去
+- 所以排障时要两边都看：
+  - `notion_fetch <page-url>` 看 MCP OAuth
+  - `npm run notion:diagnose -- "<page-url>"` 看 token integration
+
+## 2026-05-09 当前真实状态
+
+上面这段是旧阶段的根因记录，现在已经不是当前 blocker。
+
+按最新仓库状态：
+
+- `CORTEX_MCP_PUBLIC_URL` 已配置为 `https://tricky-paws-sit.loca.lt/mcp`
+- `npm run agent:setup-bundle -- --project PRJ-cortex --target-page-url "https://www.notion.so/Cortex-35beb0c2e3f780309d79ddb2bd3c44b6?source=copy_link"` 当前返回：
+  - `status = ready_for_notion_setup`
+  - `blockers = []`
+  - `target_page.in_project_scope = true`
+- `/workspace` 首页也已新增 `Notion 协作接入` 面板，可直接看到：
+  - `Custom Agent` 主路径是否 ready
+  - `token-based mirror` 是否另行授权
+  - 当前任务线程是不是来自 `Notion 讨论 / 会话线程 / 其他回退来源`
+
+所以现在真正还没完成的，不是 Cortex runtime，也不是 MCP tool 面，而是 Notion UI 侧最后一步人工挂接：
+
+1. 在 Notion 里创建或打开名为 `Cortex` 的 Custom Agent
+2. 给它挂 MCP connection：
+   - URL：`https://tricky-paws-sit.loca.lt/mcp`
+   - Header：`Authorization: Bearer <CORTEX_MCP_BEARER_TOKEN>`
+3. 开启 mention / comment triggers
+4. 在真实页面里发起第一条 `@Cortex` 绿色评论，验证 comment -> command -> receipt
+
+这也解释了为什么仓库里仍然会提到 integration：
+
+- `Custom Agent + MCP` 是 Notion 里直接 `@Cortex` 的主路径
+- `NOTION_API_KEY` integration 只是可选镜像路径，用于 `bootstrap / sync-all / memory:notion-sync`
+- 即使 integration 还没共享目标页，也不该再阻塞 `@Cortex` 这条主路径
+
 ## 目标
 
 这份文档只做一件事：
@@ -40,17 +114,28 @@ P0 目标不是在 Notion 里搭一个完整 agent team。
 
 P0 目标是先把这条主链路打通：
 
-1. 人在 Notion 页面或 discussion 里 `@Cortex Router`
-2. `Cortex Router` 读取上下文并调用 Cortex API
+1. 人在 Notion 页面或 discussion 里 `@Cortex`
+2. `Cortex` 读取上下文并调用 Cortex API
 3. Cortex 决定进入 `command` / `decision_request` / `ignored`
 4. 后续执行与回执继续围绕同一个 discussion 展开
+
+## 先把名词讲清楚
+
+这里的主路径是：
+
+- `Custom Agent`：Notion 里可直接 `@` 的入口，推荐外显名称就是 `Cortex`
+- `Connection`：在 `Tools & Access -> Add connection` 里挂的能力连接
+- `Cortex runtime`：连接后面真正执行命令、沉淀 memory、写 checkpoint 的本地内核
+
+所以 `Add connection` 不是在回退旧 token integration，而是在给 `Custom Agent` 挂执行能力。
 
 ## P0 最小接入面
 
 当前只需要这 4 个东西：
 
 1. 一个 Notion Custom Agent
-   - 名称：`Cortex Router`
+   - 推荐名称：`Cortex`
+   - `Router` 是内部职责，不建议继续暴露成最终对外名字
 2. 两个触发器
    - `The agent is mentioned in a page or comment`
    - `A comment is added to a page`
@@ -104,6 +189,21 @@ P0 不要求：
 
 - 至少配置 `root_page_url` 或 `notion_parent_page_id`
 - 如果 review / memory / scan 页面也是这个项目树的一部分，也一起配置
+
+如果你准备迁到一个新的 Notion workspace 根页，额外再看一条：
+
+- `agent:setup-bundle --target-page-url ...` 里如果出现 `target_page_out_of_scope`
+- 说明当前 `PRJ-cortex` 仍然绑定的是旧页面树
+- 此时就算新页面已经分享给 Codex / token，Notion comment 进入 Cortex 后也会被 `scope_guard` 判成 `out_of_scope_page`
+
+处理方式：
+
+1. 先用 `npm run notion:diagnose -- "<new-page-url>"` 确认 `NOTION_API_KEY` 对这个新页面可见。
+2. 再用 `npm run notion:bootstrap -- "<new-page-url>"` 在这个新根页下创建新的：
+   - 工作台页
+   - 协作记忆页
+   - 执行文档页
+3. `bootstrap` 会自动把新的 page ids 回写到 `PRJ-cortex` 项目配置和 `docs/notion-routing.json`。
 
 ### 3. 默认模式是 Custom Agent
 
@@ -181,12 +281,12 @@ Notion 侧需要先允许 Custom MCP server：
 
 在 Notion 里创建一个新的 `Custom Agent`：
 
-- Name: `Cortex Router`
+- Name: `Cortex`
 - Role: Router / triage / async collaboration entrypoint
 
 ### 1.1 连接 MCP 工具
 
-给 `Cortex Router` 添加 MCP server：
+给 `Cortex` 添加 MCP server：
 
 - Transport：Streamable HTTP
 - URL：公网 HTTPS 地址，例如 `https://your-domain.example.com/mcp`
@@ -231,7 +331,7 @@ Notion 侧需要先允许 Custom MCP server：
 下面这段可以作为 Phase 1 的直接起点：
 
 ```text
-You are Cortex Router, the single async collaboration entrypoint for Cortex in Notion.
+You are Cortex, the single async collaboration entrypoint for Cortex in Notion.
 
 Your job:
 1. Read the current page, discussion, and comment context.
@@ -276,7 +376,7 @@ Phase 1 只开放最小工具集：
   "discussion_id": "notion-discussion-id",
   "comment_id": "notion-comment-id",
   "body": "human instruction or review comment",
-  "invoked_agent": "Cortex Router",
+  "invoked_agent": "Cortex",
   "owner_agent": "agent-router",
   "source_url": "notion://page/notion-page-id/discussion/notion-discussion-id/comment/notion-comment-id"
 }
@@ -295,7 +395,7 @@ Phase 1 只开放最小工具集：
   "body": "human instruction or review comment",
   "context_quote": "the paragraph or task sentence around the comment",
   "anchor_block_id": "optional notion block id",
-  "invoked_agent": "Cortex Router",
+  "invoked_agent": "Cortex",
   "owner_agent": "agent-router",
   "route_to": "agent-pm",
   "source_url": "notion://page/notion-page-id/discussion/notion-discussion-id/comment/notion-comment-id",
@@ -420,7 +520,7 @@ curl -X POST "<CORTEX_BASE_URL>/webhook/notion-custom-agent" \
     "discussion_id": "discussion-001",
     "comment_id": "comment-001",
     "body": "整理当前 P0 阻塞并继续推进",
-    "invoked_agent": "Cortex Router",
+    "invoked_agent": "Cortex",
     "owner_agent": "agent-router",
     "source_url": "notion://page/11111111111111111111111111111111/discussion/discussion-001/comment/comment-001"
   }'
@@ -444,8 +544,8 @@ curl -X POST "<CORTEX_BASE_URL>/webhook/notion-custom-agent" \
     "page_id": "11111111-1111-1111-1111-111111111111",
     "discussion_id": "discussion-002",
     "comment_id": "comment-002",
-    "body": "这是 Router 自己补充的说明。",
-    "invoked_agent": "Cortex Router",
+    "body": "这是 Cortex 自己补充的说明。",
+    "invoked_agent": "Cortex",
     "self_authored": true,
     "source_url": "notion://page/11111111111111111111111111111111/discussion/discussion-002/comment/comment-002"
   }'
@@ -519,6 +619,59 @@ curl -X POST "<CORTEX_BASE_URL>/webhook/agent-receipt" \
 - receipt 记录成功
 - Notion discussion 可以继续承接下一轮评论
 
+## 结构化评论命令契约
+
+最近更新：2026-05-11
+
+Notion 评论现在不只依赖自然语言猜测。Router 可以在调用 `POST /webhook/notion-custom-agent` 时显式传入结构化命令，Cortex 会在普通 comment intent 分类之前优先分发。
+
+推荐 payload：
+
+```json
+{
+  "project_id": "PRJ-cortex",
+  "page_id": "page-id",
+  "discussion_id": "discussion-id",
+  "comment_id": "comment-id",
+  "body": "批准这条决策。",
+  "command_intent": {
+    "action": "approve",
+    "target_type": "decision",
+    "target_id": "DR-001",
+    "note": "批准，继续推进。"
+  }
+}
+```
+
+也支持评论体短格式，用于 Notion 侧只方便传 comment body 的场景：
+
+```text
+[approve: decision:DR-001] 批准，继续推进。
+[reject: memory:MEM-001] 这条不进入长期记忆。
+[request_changes: memory:MEM-002] 需要补证据后再审。
+[block] 外部 agent 回执缺少 checkpoint，先不要继续扩散执行。
+[continue] 继续把这条评论转成执行命令。
+```
+
+当前最小分发表：
+
+| action | target_type | Cortex 行为 |
+| --- | --- | --- |
+| `approve` | `decision` | `decision.status=approved`，并触发 decision outcome -> memory candidate 投影 |
+| `reject` | `decision` | `decision.status=stopped` |
+| `request_changes` | `decision` | `decision.status=changes_requested` |
+| `block` | 无 target | 创建 `red decision_request`，不进入 command 队列 |
+| `approve` | `memory` | `memory.review_state=accepted` 且 `status=durable` |
+| `reject` | `memory` | `memory.review_state=rejected` 且 `status=rejected` |
+| `request_changes` / `block` | `memory` | `memory.review_state=needs_followup`，保留 candidate |
+| `continue` | 可无 target | 创建或派生 command，继续由 executor/agent claim |
+
+这轮已验证：
+
+- `approve decision` 会更新决策并生成 memory candidate。
+- `[approve: memory:MEM-*]` 会把候选记忆推进到 durable memory。
+- `[block]` 会直接形成红灯 decision request，而不是被误判成普通待执行 comment。
+
 ## 常见问题
 
 ### 1. `skip_reason=self_authored_comment`
@@ -570,11 +723,46 @@ curl -X POST "<CORTEX_BASE_URL>/webhook/agent-receipt" \
 - `signal_level`
 - `skip_reason`
 
+### 5. 为什么 command 已完成但 Notion 没有评论回复
+
+先分清两条链：
+
+- `Custom Agent + MCP`：负责把 Notion 评论送进 Cortex，并生成 command / decision / ignored
+- `token-based discussion writeback`：负责用 `NOTION_API_KEY` 调 Notion comments API，在同一 discussion 里代写回复
+
+2026-05-11 真机结果：
+
+- `ingest_notion_comment` 已被 Notion 调用并返回 200
+- `CMD-20260511-017 / 018` 已进入队列并完成
+- executor 已恢复受控 writeback：`NOTION_DISCUSSION_WRITEBACK=1`
+- 清理了一个旧的 `agent-notion-worker` 孤儿进程，避免旧 worker 抢任务继续走 docs-only
+- 新 worker 已尝试 Notion discussion writeback，但 Notion comments API 返回 `503 service_unavailable`
+- 同时 `notion:diagnose` 对目标页返回 `page_not_shared`
+
+处理：
+
+- 把目标页面或其父页面共享给 `NOTION_API_KEY` 对应的 Notion integration
+- 当前诊断里 integration 名称是 `codex`
+- 共享后重跑 `npm run notion:diagnose -- "<target-page-url>"`，必须看到 `status=ready`
+- 再发一条 `@Cortex` 评论验证，预期是 command 完成后同一 discussion 出现自动回复
+
+2026-05-12 更新：
+
+- 新建 `codex` internal integration 后，已更新本地 `NOTION_API_KEY`
+- 目标页已 Add connection 到新 `codex`
+- `notion:diagnose` 已返回 `status=ready`
+- runtime 重启后，`CMD-20260512-001` 已完成并写回同一 Notion discussion
+- 现在这条闭环不再是 blocker；后续若再次无回复，优先检查：
+  - `NOTION_DISCUSSION_WRITEBACK=1`
+  - `notion:diagnose` 是否仍为 `ready`
+  - 是否有旧 executor worker 孤儿进程抢任务
+  - Notion comments API 是否返回 429/5xx
+
 ## 当前建议
 
 P0 先做到这 3 件事就够：
 
-1. 让 `Cortex Router` 成为 Notion 里的唯一入口
+1. 让 `Cortex` 成为 Notion 里的唯一入口
 2. 让 `self-loop guard` 和 `page scope guard` 同时生效
 3. 让 `green / yellow / red` 的返回语义在 Notion 侧可观测
 

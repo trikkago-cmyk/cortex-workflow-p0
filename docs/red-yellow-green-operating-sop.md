@@ -25,7 +25,7 @@
 
 ## 角色分工
 
-- `Cortex Router`
+- `Cortex`
   - 第一层分流器
   - 负责把事件归类为 green / yellow / red
 - `executor worker / external agent`
