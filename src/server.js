@@ -4,8 +4,22 @@ import { resolve } from 'node:path';
 import { CortexEngine } from './engine.js';
 import { createStore } from './store.js';
 import { CortexProjector } from './projector.js';
-import { buildTaskDashboardPayload, renderTaskDashboardPage } from './task-dashboard.js';
+import {
+  buildTaskDashboardPayload,
+  buildWorkspaceThreadHref,
+  buildWorkspacePayload,
+  renderTaskDashboardPage,
+  renderWorkspacePage,
+} from './task-dashboard.js';
+import { buildWorkspaceDocumentPayload, renderWorkspaceDocumentPage, saveWorkspaceDocument } from './workspace-docs.js';
 import { defaultAgentRegistryFile } from './agent-registry.js';
+import { buildAutomationStatus } from './automation-status.js';
+import { parseCommentIntentEventKey, signalLevelFromCommentIntent } from './comment-intent.js';
+import {
+  decisionStatusFromStructuredAction,
+  memoryReviewFromStructuredAction,
+  parseStructuredNotionCommand,
+} from './notion-command-intent.js';
 import {
   getConnectAgent,
   listConnectAgents,
@@ -30,6 +44,14 @@ function sendHtml(res, statusCode, html) {
   res.end(html);
 }
 
+function sendRedirect(res, statusCode, location) {
+  res.writeHead(statusCode, {
+    Location: location,
+    'Content-Length': '0',
+  });
+  res.end();
+}
+
 function compact(value) {
   return String(value || '')
     .replace(/\s+/g, ' ')
@@ -38,6 +60,18 @@ function compact(value) {
 
 function stableHash(value) {
   return createHash('sha1').update(String(value || ''), 'utf8').digest('hex').slice(0, 12);
+}
+
+function sanitizeDomToken(value) {
+  return compact(value)
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function buildCommentAnchorFragment(commandId) {
+  const sanitized = sanitizeDomToken(commandId);
+  return sanitized ? `#comment-thread-${sanitized}` : '#workspace-compose';
 }
 
 function summarizeInstruction(text, maxLength = 160) {
@@ -597,14 +631,33 @@ function requireFields(body, fields) {
 }
 
 function mapCommandForApi(command) {
+  const commentIntent = parseCommentIntentEventKey(command.eventKey);
   return {
     command_id: command.commandId,
     commandId: command.commandId,
     project_id: command.projectId,
     projectId: command.projectId,
+    thread_key: command.threadKey || null,
+    threadKey: command.threadKey || null,
+    thread_label: command.threadLabel || null,
+    threadLabel: command.threadLabel || null,
     status: command.status,
     parsed_action: command.parsedAction,
     parsedAction: command.parsedAction,
+    comment_intent: commentIntent?.comment_intent || null,
+    commentIntent: commentIntent?.comment_intent || null,
+    comment_task_state: commentIntent?.comment_task_state || null,
+    commentTaskState: commentIntent?.comment_task_state || null,
+    comment_execution_policy: commentIntent?.comment_execution_policy || null,
+    commentExecutionPolicy: commentIntent?.comment_execution_policy || null,
+    comment_executable: commentIntent?.comment_executable ?? null,
+    commentExecutable: commentIntent?.comment_executable ?? null,
+    comment_allowed: commentIntent?.comment_allowed ?? null,
+    commentAllowed: commentIntent?.comment_allowed ?? null,
+    comment_confidence: commentIntent?.comment_confidence || null,
+    commentConfidence: commentIntent?.comment_confidence || null,
+    comment_reason: commentIntent?.comment_reason || null,
+    commentReason: commentIntent?.comment_reason || null,
     instruction: command.instruction,
     context_quote: command.contextQuote,
     contextQuote: command.contextQuote,
@@ -627,6 +680,8 @@ function mapCommandForApi(command) {
     last_inbox_item_at: command.lastInboxItemAt,
     lastInboxItemAt: command.lastInboxItemAt,
     ack: command.ack,
+    event_key: command.eventKey,
+    eventKey: command.eventKey,
     source: command.source,
     target_type: command.targetType,
     target_id: command.targetId,
@@ -645,6 +700,10 @@ function mapDecisionForApi(decision) {
     decisionId: decision.decisionId,
     project_id: decision.projectId,
     projectId: decision.projectId,
+    thread_key: decision.threadKey || null,
+    threadKey: decision.threadKey || null,
+    thread_label: decision.threadLabel || null,
+    threadLabel: decision.threadLabel || null,
     signal_level: decision.signalLevel,
     signalLevel: decision.signalLevel,
     blocking_level: decision.blockingLevel,
@@ -700,6 +759,10 @@ function mapTaskBriefForApi(brief) {
     briefId: brief.briefId,
     project_id: brief.projectId,
     projectId: brief.projectId,
+    thread_key: brief.threadKey || null,
+    threadKey: brief.threadKey || null,
+    thread_label: brief.threadLabel || null,
+    threadLabel: brief.threadLabel || null,
     title: brief.title,
     why: brief.why,
     context: brief.context,
@@ -708,6 +771,8 @@ function mapTaskBriefForApi(brief) {
     owner_agent: brief.ownerAgent,
     ownerAgent: brief.ownerAgent,
     source: brief.source,
+    source_ref: brief.sourceRef,
+    sourceRef: brief.sourceRef,
     source_url: brief.sourceUrl,
     sourceUrl: brief.sourceUrl,
     channel_session_id: brief.channelSessionId,
@@ -815,6 +880,10 @@ function mapRunForApi(run) {
     runId: run.runId,
     project_id: run.projectId,
     projectId: run.projectId,
+    thread_key: run.threadKey || null,
+    threadKey: run.threadKey || null,
+    thread_label: run.threadLabel || null,
+    threadLabel: run.threadLabel || null,
     brief_id: run.briefId,
     briefId: run.briefId,
     command_id: run.commandId,
@@ -851,6 +920,10 @@ function mapCheckpointForApi(checkpoint) {
     checkpointId: checkpoint.checkpointId,
     project_id: checkpoint.projectId,
     projectId: checkpoint.projectId,
+    thread_key: checkpoint.threadKey || null,
+    threadKey: checkpoint.threadKey || null,
+    thread_label: checkpoint.threadLabel || null,
+    threadLabel: checkpoint.threadLabel || null,
     run_id: checkpoint.runId,
     runId: checkpoint.runId,
     brief_id: checkpoint.briefId,
@@ -922,6 +995,10 @@ function mapReceiptForApi(receipt) {
     commandId: receipt.commandId,
     project_id: receipt.projectId,
     projectId: receipt.projectId,
+    thread_key: receipt.threadKey || null,
+    threadKey: receipt.threadKey || null,
+    thread_label: receipt.threadLabel || null,
+    threadLabel: receipt.threadLabel || null,
     session_id: receipt.sessionId,
     sessionId: receipt.sessionId,
     status: receipt.status,
@@ -1006,6 +1083,10 @@ function mapInboxForApi(item) {
     itemId: item.itemId,
     project_id: item.projectId,
     projectId: item.projectId,
+    thread_key: item.threadKey,
+    threadKey: item.threadKey,
+    thread_label: item.threadLabel,
+    threadLabel: item.threadLabel,
     queue: item.queue,
     object_type: item.objectType,
     objectType: item.objectType,
@@ -1053,6 +1134,10 @@ function mapSuggestionForApi(suggestion) {
     suggestionId: suggestion.suggestionId,
     project_id: suggestion.projectId,
     projectId: suggestion.projectId,
+    thread_key: suggestion.threadKey,
+    threadKey: suggestion.threadKey,
+    thread_label: suggestion.threadLabel,
+    threadLabel: suggestion.threadLabel,
     source_type: suggestion.sourceType,
     sourceType: suggestion.sourceType,
     source_ref: suggestion.sourceRef,
@@ -1121,6 +1206,83 @@ function createSyncAlias(redAlert) {
   };
 }
 
+function buildWorkspaceRuntimeStatusPayload(status) {
+  const processes = Array.isArray(status?.processes) ? status.processes : [];
+  const runningCount = processes.filter((processState) => processState.running).length;
+  const stoppedCount = Math.max(processes.length - runningCount, 0);
+  const liveListener = status?.liveListener || {};
+  const hasHealthProbe = status?.healthProbe != null;
+  const healthProbeOk = hasHealthProbe ? status?.healthProbe?.ok === true : null;
+  const coveredProcesses = processes
+    .filter((processState) => compact(processState.covered_by || processState.coveredBy).toLowerCase() === 'health_probe')
+    .map((processState) => processState.name);
+  const driftDetected = liveListener.driftDetected === true;
+
+  let severity = 'healthy';
+  let headline = 'runtime 正常，当前 live 端口已经由受管 Cortex server 接管。';
+  let recommendation = '当前无需额外动作。';
+
+  if (driftDetected) {
+    severity = 'degraded';
+    headline = 'live 端口与 managed pid 不一致，前台可能还在吃旧进程。';
+    recommendation = '优先执行 `npm run automation:restart`，必要时先跑 `npm run automation:stop` 清掉孤儿 server。';
+  } else if (stoppedCount > 0) {
+    severity = runningCount > 0 ? 'degraded' : 'blocking';
+    headline = runningCount > 0 ? `仍有 ${stoppedCount} 个 managed 进程未运行。` : 'managed runtime 当前未拉起。';
+    recommendation = '优先执行 `npm run automation:restart`，确认 managed 进程全部回到 running。';
+  } else if (hasHealthProbe && !healthProbeOk) {
+    severity = 'degraded';
+    headline = 'managed 进程都在，但 health probe 没有确认到 cortex-p0。';
+    recommendation = '检查 `/health`、端口监听和当前 live listener。';
+  } else if (coveredProcesses.includes('cortex-server')) {
+    headline = 'runtime 正常，且 cortex-server 是通过 health probe 兜底确认的。';
+  }
+
+  return {
+    ok: true,
+    severity,
+    headline,
+    recommendation,
+    process_counts: {
+      total: processes.length,
+      running: runningCount,
+      stopped: stoppedCount,
+    },
+    processCounts: {
+      total: processes.length,
+      running: runningCount,
+      stopped: stoppedCount,
+    },
+    health_probe: status?.healthProbe || null,
+    healthProbe: status?.healthProbe || null,
+    covered_processes: coveredProcesses,
+    coveredProcesses,
+    live_listener: {
+      port: liveListener.port || null,
+      pid: liveListener.pid || null,
+      command: liveListener.command || null,
+      working_directory: liveListener.workingDirectory || null,
+      workingDirectory: liveListener.workingDirectory || null,
+      matches_repo_server: liveListener.matchesRepoServer === true,
+      matchesRepoServer: liveListener.matchesRepoServer === true,
+      matches_managed_pid: liveListener.matchesManagedPid === true,
+      matchesManagedPid: liveListener.matchesManagedPid === true,
+      drift_detected: driftDetected,
+      driftDetected,
+    },
+    liveListener: {
+      port: liveListener.port || null,
+      pid: liveListener.pid || null,
+      command: liveListener.command || null,
+      workingDirectory: liveListener.workingDirectory || null,
+      matchesRepoServer: liveListener.matchesRepoServer === true,
+      matchesManagedPid: liveListener.matchesManagedPid === true,
+      driftDetected,
+    },
+    processes,
+  };
+}
+
 export function createCortexServer(options = {}) {
   const store = options.store || createStore({ dbPath: options.dbPath, clock: options.clock });
   const engine =
@@ -1140,11 +1302,230 @@ export function createCortexServer(options = {}) {
     executorRoutingFile:
       options.executorRoutingFile || process.env.EXECUTOR_ROUTING_FILE || resolve(cwd, 'docs', 'executor-routing.json'),
   };
+  const automationStatusBuilder = options.automationStatusBuilder || buildAutomationStatus;
+  const cortexBaseUrl = options.cortexBaseUrl || process.env.CORTEX_BASE_URL || 'http://127.0.0.1:19100';
+
+  function mapMemoryProjectionsForApi(projections = []) {
+    return projections.map((projection) => ({
+      memory: mapMemoryForApi(projection.memory),
+      sources: (projection.sources || []).map(mapMemorySourceForApi),
+      reviewer_assessment: projection.reviewerAssessment || null,
+      reviewerAssessment: projection.reviewerAssessment || null,
+      inbox_item: mapInboxForApi(projection.inboxItem),
+      inboxItem: mapInboxForApi(projection.inboxItem),
+    }));
+  }
+
+  function dispatchStructuredNotionCommand(body, structuredCommand, projectId) {
+    const sourceUrl =
+      compact(body.source_url || body.sourceUrl) ||
+      `notion://page/${body.page_id}/discussion/${body.discussion_id}/comment/${body.comment_id}`;
+    const baseResponse = {
+      ok: true,
+      collaboration_mode: 'custom_agent',
+      collaborationMode: 'custom_agent',
+      workflow_path: 'structured_command',
+      workflowPath: 'structured_command',
+      structured_command: structuredCommand,
+      structuredCommand,
+      signal_level: structuredCommand.action === 'block' ? 'red' : 'green',
+      signalLevel: structuredCommand.action === 'block' ? 'red' : 'green',
+      invoked_agent: body.invoked_agent || null,
+      invokedAgent: body.invoked_agent || null,
+      owner_agent: compact(body.owner_agent || body.ownerAgent || body.route_to || body.routeTo) || null,
+      ownerAgent: compact(body.owner_agent || body.ownerAgent || body.route_to || body.routeTo) || null,
+      source_url: sourceUrl,
+      sourceUrl,
+    };
+
+    if (structuredCommand.action === 'continue') {
+      const result = engine.ingestNotionComment({
+        parentCommandId: structuredCommand.targetType === 'command' ? structuredCommand.targetId : null,
+        projectId,
+        targetType: body.target_type || structuredCommand.targetType,
+        targetId: body.target_id || structuredCommand.targetId,
+        pageId: body.page_id,
+        discussionId: body.discussion_id,
+        commentId: body.comment_id,
+        body: `[continue] ${structuredCommand.instruction || structuredCommand.note || body.body}`,
+        ownerAgent: body.owner_agent || body.route_to,
+        contextQuote: body.context_quote || body.contextQuote,
+        anchorBlockId: body.anchor_block_id || body.anchorBlockId,
+        sourceUrl,
+      });
+      projector.projectNotionComment(result.command);
+
+      return {
+        ...baseResponse,
+        workflow_path: 'command',
+        workflowPath: 'command',
+        signal_level: signalLevelFromCommentIntent(result.commentIntent),
+        signalLevel: signalLevelFromCommentIntent(result.commentIntent),
+        command_id: result.commandId,
+        commandId: result.commandId,
+        decision_id: null,
+        decisionId: null,
+        memory_id: null,
+        memoryId: null,
+        isDuplicate: result.isDuplicate,
+        command: mapCommandForApi(result.command),
+        comment_intent: result.commentIntent.intent,
+        commentIntent: result.commentIntent.intent,
+      };
+    }
+
+    if (structuredCommand.action === 'block' && !structuredCommand.targetId) {
+      const decisionResult = engine.createDecision({
+        projectId,
+        signalLevel: 'red',
+        question:
+          structuredCommand.note ||
+          structuredCommand.instruction ||
+          `Notion structured block：${summarizeInstruction(body.body, 96)}`,
+        context: compact(body.context || body.context_quote || body.contextQuote || body.body) || null,
+        recommendation: compact(body.recommendation) || '先暂停当前路径，明确阻塞原因和下一步 owner 后再继续。',
+        whyNow: 'Notion 评论显式发送 block 结构化命令。',
+        impactScope: body.impact_scope || body.impactScope || 'module',
+        ownerAgent: body.owner_agent || body.route_to,
+        sourceUrl,
+        requestedHumanAction: '请在 Notion discussion 中确认 unblock 条件或改派处理。',
+        idempotencyKey:
+          body.idempotency_key ||
+          body.idempotencyKey ||
+          `notion-structured-block:${body.page_id}:${body.discussion_id}:${body.comment_id}`,
+      });
+      projector.projectDecisionRequest(decisionResult.decision);
+
+      const response = {
+        ...baseResponse,
+        workflow_path: 'decision_request',
+        workflowPath: 'decision_request',
+        command_id: null,
+        commandId: null,
+        decision_id: decisionResult.decision.decisionId,
+        decisionId: decisionResult.decision.decisionId,
+        memory_id: null,
+        memoryId: null,
+        isDuplicate: decisionResult.isDuplicate,
+        decision: mapDecisionForApi(decisionResult.decision),
+        outbox_queued: decisionResult.outboxQueued,
+        outboxQueued: decisionResult.outboxQueued,
+      };
+      if (decisionResult._redAlert) {
+        response._redAlert = decisionResult._redAlert;
+        response._syncAlert = createSyncAlias(decisionResult._redAlert);
+      }
+      return response;
+    }
+
+    if (!structuredCommand.targetType || !structuredCommand.targetId) {
+      throw new Error('Structured Notion commands require target_type and target_id, except block/continue.');
+    }
+
+    if (structuredCommand.targetType === 'decision') {
+      const decisionStatus = decisionStatusFromStructuredAction(structuredCommand.action);
+      if (!decisionStatus) {
+        throw new Error(`Unsupported decision structured action ${structuredCommand.action}`);
+      }
+      const decision = engine.updateDecisionStatus({
+        decisionId: structuredCommand.targetId,
+        status: decisionStatus,
+        decidedBy: body.actor_name || body.actorName || body.comment_author_name || body.commentAuthorName || 'notion_custom_agent',
+        decisionNote: structuredCommand.note || body.body,
+        selectedOption: body.selected_option || body.selectedOption,
+      });
+      const projections = projector.projectDecisionOutcome(decision);
+
+      return {
+        ...baseResponse,
+        command_id: null,
+        commandId: null,
+        decision_id: decision.decisionId,
+        decisionId: decision.decisionId,
+        memory_id: null,
+        memoryId: null,
+        decision: mapDecisionForApi(decision),
+        memory_projections: mapMemoryProjectionsForApi(projections),
+        memoryProjections: mapMemoryProjectionsForApi(projections),
+      };
+    }
+
+    if (structuredCommand.targetType === 'memory') {
+      const review = memoryReviewFromStructuredAction(structuredCommand.action);
+      if (!review) {
+        throw new Error(`Unsupported memory structured action ${structuredCommand.action}`);
+      }
+      const result = engine.reviewMemory({
+        memoryId: structuredCommand.targetId,
+        reviewState: review.reviewState,
+        status: review.status,
+        reviewActor: body.actor_name || body.actorName || body.comment_author_name || body.commentAuthorName || 'notion_custom_agent',
+        reviewNote: structuredCommand.note || body.body,
+        nextStep:
+          review.reviewState === 'accepted'
+            ? '已由 Notion 结构化命令确认进入 durable memory。'
+            : review.reviewState === 'rejected'
+              ? '已由 Notion 结构化命令拒绝，不进入长期记忆。'
+              : 'Notion 结构化命令要求补充证据或修改表述后再审。',
+      });
+
+      return {
+        ...baseResponse,
+        command_id: null,
+        commandId: null,
+        decision_id: null,
+        decisionId: null,
+        memory_id: result.memory.memoryId,
+        memoryId: result.memory.memoryId,
+        memory_scope: structuredCommand.memoryScope,
+        memoryScope: structuredCommand.memoryScope,
+        memory: mapMemoryForApi(result.memory),
+      };
+    }
+
+    if (structuredCommand.targetType === 'command') {
+      const nextStatus =
+        structuredCommand.action === 'approve'
+          ? 'done'
+          : structuredCommand.action === 'reject' || structuredCommand.action === 'block'
+            ? 'cancelled'
+            : structuredCommand.action === 'request_changes'
+              ? 'new'
+              : null;
+      if (!nextStatus) {
+        throw new Error(`Unsupported command structured action ${structuredCommand.action}`);
+      }
+      const command = engine.updateCommandStatus({
+        commandId: structuredCommand.targetId,
+        status: nextStatus,
+        resultSummary: structuredCommand.note || body.body,
+        ownerAgent: body.owner_agent || body.route_to,
+      });
+
+      return {
+        ...baseResponse,
+        command_id: command.commandId,
+        commandId: command.commandId,
+        decision_id: null,
+        decisionId: null,
+        memory_id: null,
+        memoryId: null,
+        command: mapCommandForApi(command),
+      };
+    }
+
+    throw new Error(`Unsupported structured command target_type ${structuredCommand.targetType}`);
+  }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const connectDetailMatch = url.pathname.match(/^\/connect\/agents\/([^/]+)$/);
     const connectVerifyMatch = url.pathname.match(/^\/connect\/agents\/([^/]+)\/verify$/);
+    const workspaceDocumentMatch = url.pathname.match(/^\/workspace\/docs\/([^/]+)$/);
+    const workspaceDocumentSaveMatch = url.pathname.match(/^\/workspace\/docs\/([^/]+)\/save$/);
+    const workspaceThreadMatch = url.pathname.match(/^\/workspace\/threads\/(.+)$/);
+    const workspaceThreadCommentMatch = url.pathname.match(/^\/workspace\/threads\/(.+)\/comment$/);
+    const workspaceThreadDecisionMatch = url.pathname.match(/^\/workspace\/threads\/(.+)\/decision$/);
     const memoryReviewerMatch = url.pathname.match(/^\/memory\/([^/]+)\/reviewer-review$/);
     const memoryDetailMatch = url.pathname.match(/^\/memory\/([^/]+)$/);
     const memoryReviewMatch = url.pathname.match(/^\/memory\/([^/]+)\/review$/);
@@ -1157,6 +1538,14 @@ export function createCortexServer(options = {}) {
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
         return sendJson(res, 200, engine.health());
+      }
+
+      if (req.method === 'GET' && url.pathname === '/workspace/runtime-status') {
+        const runtimeStatus = await automationStatusBuilder({
+          cwd,
+          cortexBaseUrl,
+        });
+        return sendJson(res, 200, buildWorkspaceRuntimeStatusPayload(runtimeStatus));
       }
 
       if (req.method === 'GET' && url.pathname === '/connect/agents') {
@@ -1449,6 +1838,285 @@ export function createCortexServer(options = {}) {
         return sendHtml(res, 200, renderTaskDashboardPage(payload));
       }
 
+      if (req.method === 'GET' && url.pathname === '/workspace/data') {
+        return sendJson(
+          res,
+          200,
+          buildWorkspacePayload(engine, url.searchParams.get('project_id'), {
+            includeSynthetic: parseOptionalBoolean(url.searchParams.get('include_synthetic')) === true,
+            includeResidual: parseOptionalBoolean(url.searchParams.get('include_residual')) === true,
+            residualPattern: url.searchParams.get('residual_pattern'),
+            view: url.searchParams.get('view'),
+            threadFilter: url.searchParams.get('thread_filter'),
+            commentFilter: url.searchParams.get('comment_filter'),
+            actionFeedback: url.searchParams.get('action_feedback'),
+            actionFeedbackTone: url.searchParams.get('action_feedback_tone'),
+          }),
+        );
+      }
+
+      if (req.method === 'GET' && url.pathname === '/workspace') {
+        const payload = buildWorkspacePayload(engine, url.searchParams.get('project_id'), {
+          includeSynthetic: parseOptionalBoolean(url.searchParams.get('include_synthetic')) === true,
+          includeResidual: parseOptionalBoolean(url.searchParams.get('include_residual')) === true,
+          residualPattern: url.searchParams.get('residual_pattern'),
+          view: url.searchParams.get('view'),
+          threadFilter: url.searchParams.get('thread_filter'),
+          commentFilter: url.searchParams.get('comment_filter'),
+          actionFeedback: url.searchParams.get('action_feedback'),
+          actionFeedbackTone: url.searchParams.get('action_feedback_tone'),
+        });
+        return sendHtml(res, 200, renderWorkspacePage(payload));
+      }
+
+      if (req.method === 'GET' && workspaceDocumentMatch) {
+        const workspaceContext = {
+          includeSynthetic: parseOptionalBoolean(url.searchParams.get('include_synthetic')) === true,
+          includeResidual: parseOptionalBoolean(url.searchParams.get('include_residual')) === true,
+          residualPattern: url.searchParams.get('residual_pattern'),
+          view: url.searchParams.get('view'),
+          threadFilter: url.searchParams.get('thread_filter'),
+          commentFilter: url.searchParams.get('comment_filter'),
+        };
+        const payload = buildWorkspaceDocumentPayload(
+          engine,
+          url.searchParams.get('project_id'),
+          decodeURIComponent(workspaceDocumentMatch[1]),
+          {
+            includeSynthetic: workspaceContext.includeSynthetic,
+            includeResidual: workspaceContext.includeResidual,
+            residualPattern: workspaceContext.residualPattern,
+            workspaceContext,
+          },
+        );
+        return sendHtml(res, 200, renderWorkspaceDocumentPage(payload));
+      }
+
+      if (req.method === 'GET' && workspaceThreadMatch) {
+        const requestedThreadKey = decodeURIComponent(workspaceThreadMatch[1]);
+        const workspaceContext = {
+          includeSynthetic: parseOptionalBoolean(url.searchParams.get('include_synthetic')) === true,
+          includeResidual: parseOptionalBoolean(url.searchParams.get('include_residual')) === true,
+          residualPattern: url.searchParams.get('residual_pattern'),
+          view: url.searchParams.get('view'),
+          threadFilter: url.searchParams.get('thread_filter'),
+          commentFilter: url.searchParams.get('comment_filter'),
+        };
+        const payload = buildWorkspaceDocumentPayload(
+          engine,
+          url.searchParams.get('project_id'),
+          url.searchParams.get('document_id') || 'execution',
+          {
+            includeSynthetic: workspaceContext.includeSynthetic,
+            includeResidual: true,
+            residualPattern: workspaceContext.residualPattern,
+            threadKey: requestedThreadKey,
+            workspaceContext,
+          },
+        );
+        if (payload.resolved_thread_href && payload.requested_thread_key && payload.requested_thread_key === requestedThreadKey) {
+          return sendRedirect(res, 302, payload.resolved_thread_href);
+        }
+        return sendHtml(res, 200, renderWorkspaceDocumentPage(payload));
+      }
+
+      if (req.method === 'POST' && workspaceDocumentSaveMatch) {
+        const body = await readJsonBody(req);
+        requireFields(body, ['project_id']);
+        if (body.body === undefined || body.body === null) {
+          throw new Error('Missing required field(s): body');
+        }
+        return sendJson(
+          res,
+          200,
+          saveWorkspaceDocument({
+            projectId: body.project_id,
+            documentId: decodeURIComponent(workspaceDocumentSaveMatch[1]),
+            body: body.body,
+            cwd,
+          }),
+        );
+      }
+
+      if (req.method === 'POST' && workspaceThreadCommentMatch) {
+        const body = await readJsonBody(req);
+        requireFields(body, ['project_id', 'body']);
+
+        const projectId = body.project_id;
+        const documentId = body.document_id || 'execution';
+        const threadKey = decodeURIComponent(workspaceThreadCommentMatch[1]);
+        const payload = buildWorkspaceDocumentPayload(engine, projectId, documentId, {
+          includeSynthetic: parseOptionalBoolean(body.include_synthetic) === true,
+          threadKey,
+        });
+        const selectedThread = payload.selected_thread;
+
+        if (!selectedThread) {
+          return sendJson(res, 404, {
+            ok: false,
+            error: 'Workspace thread not found',
+          });
+        }
+
+        const instruction = compact(body.body);
+        if (!instruction) {
+          throw new Error('Comment body cannot be empty');
+        }
+
+        const mode = compact(body.mode || 'comment').toLowerCase();
+        if (!['comment', 'yellow', 'red'].includes(mode)) {
+          throw new Error('mode must be one of: comment, yellow, red');
+        }
+
+        const workflowOwnerAgent = compact(payload.thread_detail?.workflow?.ownerAgent);
+        const taskOwnerAgent =
+          selectedThread.tasks
+            .map((task) => compact(task.owner_agent || task.ownerAgent))
+            .find(Boolean) || null;
+        const ownerAgent = compact(body.owner_agent || workflowOwnerAgent || taskOwnerAgent) || null;
+        const refreshUrl = `/workspace/threads/${workspaceThreadCommentMatch[1]}?project_id=${encodeURIComponent(projectId)}&document_id=${encodeURIComponent(documentId)}`;
+        const replyToCommandId = compact(body.reply_to_command_id || body.replyToCommandId);
+        const replyToTitle = compact(body.reply_to_comment_title || body.replyToCommentTitle);
+        const replyToSummary = compact(body.reply_to_comment_summary || body.replyToCommentSummary);
+        const sourceUrl = `${refreshUrl}${replyToCommandId ? buildCommentAnchorFragment(replyToCommandId) : '#workspace-compose'}`;
+        const threadLabel = selectedThread.thread_label || selectedThread.threadLabel || threadKey;
+        const composeContext =
+          compact(body.context_quote || body.contextQuote) ||
+          (replyToTitle || replyToSummary
+            ? [
+                `来自 Cortex 工作台线程「${threadLabel}」里一条评论的原地回复。`,
+                replyToTitle ? `源评论：${replyToTitle}` : '',
+                replyToSummary ? `摘要：${replyToSummary}` : '',
+              ]
+                .filter(Boolean)
+                .join(' ')
+            : `来自 Cortex 工作台线程「${threadLabel}」的协作输入。`);
+
+        if (mode === 'yellow' || mode === 'red') {
+          const result = engine.createDecision({
+            projectId,
+            threadKey,
+            threadLabel,
+            signalLevel: mode,
+            question: instruction,
+            context: composeContext,
+            recommendation:
+              mode === 'red'
+                ? '先完成人工拍板，再越过当前不可逆或高污染决策点。'
+                : '继续推进其他安全事项，把这条阻塞挂进 review 窗口统一处理。',
+            whyNow: composeContext,
+            impactScope: body.impact_scope || (mode === 'red' ? 'cross_module' : 'module'),
+            ownerAgent,
+            sourceUrl,
+            requestedHumanAction:
+              mode === 'red'
+                ? '请尽快在这个线程内拍板，否则不要越过当前红灯。'
+                : '请在 review 窗口确认这条线程的后续方向。',
+            idempotencyKey:
+              body.idempotency_key ||
+              `workspace-thread-decision:${projectId}:${threadKey}:${mode}:${stableHash(`${instruction}:${engine.store.clock().toISOString()}`)}`,
+          });
+          projector.projectDecisionRequest(result.decision);
+
+          return sendJson(res, 200, {
+            ok: true,
+            workflow_path: 'decision_request',
+            workflowPath: 'decision_request',
+            signal_level: result.decision.signalLevel,
+            signalLevel: result.decision.signalLevel,
+            decision_id: result.decision.decisionId,
+            decisionId: result.decision.decisionId,
+            owner_agent: result.decision.ownerAgent,
+            ownerAgent: result.decision.ownerAgent,
+            decision: mapDecisionForApi(result.decision),
+            refresh_url: refreshUrl,
+            refreshUrl,
+            outbox_queued: result.outboxQueued,
+            outboxQueued: result.outboxQueued,
+          });
+        }
+
+        const discussionId = `workspace-${stableHash(threadKey)}`;
+        const commentId = `workspace-${stableHash(`${instruction}:${engine.store.clock().toISOString()}`)}`;
+        const replyOnly = parseOptionalBoolean(body.reply_only || body.replyOnly) === true;
+        const normalizedCommentBody = replyOnly
+          ? /^\[reply\]/i.test(instruction)
+            ? instruction
+            : `[reply] ${instruction}`
+          : /^(?:\[(?:continue|improve|retry|stop|clarify)\b|\[(?:suggestion|memory|inbox|decision)-)/i.test(instruction)
+            ? instruction
+            : `[continue] ${instruction}`;
+        const result = engine.ingestNotionComment({
+          parentCommandId: replyToCommandId || null,
+          projectId,
+          threadKey,
+          threadLabel,
+          targetType: 'workspace_thread',
+          targetId: threadKey,
+          pageId: `workspace-${stableHash(`${projectId}:${documentId}`)}`,
+          discussionId,
+          commentId,
+          body: normalizedCommentBody,
+          ownerAgent,
+          contextQuote: composeContext,
+          sourceUrl,
+        });
+        projector.projectNotionComment(result.command);
+
+        const commentRefreshUrl = `${refreshUrl}${replyToCommandId ? buildCommentAnchorFragment(replyToCommandId) : ''}`;
+
+        return sendJson(res, 200, {
+          ok: true,
+          workflow_path:
+            result.commentIntent.executionPolicy === 'log_only'
+              ? 'comment_history'
+              : result.commentIntent.executable
+                ? 'command'
+                : 'comment_triage',
+          workflowPath:
+            result.commentIntent.executionPolicy === 'log_only'
+              ? 'comment_history'
+              : result.commentIntent.executable
+                ? 'command'
+                : 'comment_triage',
+          signal_level: signalLevelFromCommentIntent(result.commentIntent),
+          signalLevel: signalLevelFromCommentIntent(result.commentIntent),
+          comment_intent: result.commentIntent.intent,
+          commentIntent: result.commentIntent.intent,
+          comment_task_state: result.commentIntent.taskState,
+          commentTaskState: result.commentIntent.taskState,
+          comment_execution_policy: result.commentIntent.executionPolicy,
+          commentExecutionPolicy: result.commentIntent.executionPolicy,
+          owner_agent: result.command.ownerAgent,
+          ownerAgent: result.command.ownerAgent,
+          command_id: result.command.commandId,
+          commandId: result.command.commandId,
+          command: mapCommandForApi(result.command),
+          refresh_url: commentRefreshUrl,
+          refreshUrl: commentRefreshUrl,
+        });
+      }
+
+      if (req.method === 'POST' && workspaceThreadDecisionMatch) {
+        const body = await readJsonBody(req);
+        requireFields(body, ['decision_id', 'status']);
+        const updatedDecision = engine.updateDecisionStatus({
+          decisionId: body.decision_id,
+          status: body.status,
+          decidedBy: body.decided_by || 'workspace_manual_decision',
+          decidedAt: body.decided_at,
+          decisionNote: body.decision_note,
+          selectedOption: body.selected_option,
+        });
+        projector.projectDecisionOutcome(updatedDecision);
+        return sendJson(res, 200, {
+          ok: true,
+          decision: mapDecisionForApi(updatedDecision),
+          refresh_url: `/workspace/threads/${workspaceThreadDecisionMatch[1]}?project_id=${encodeURIComponent(body.project_id || updatedDecision.projectId)}&document_id=${encodeURIComponent(body.document_id || 'execution')}`,
+          refreshUrl: `/workspace/threads/${workspaceThreadDecisionMatch[1]}?project_id=${encodeURIComponent(body.project_id || updatedDecision.projectId)}&document_id=${encodeURIComponent(body.document_id || 'execution')}`,
+        });
+      }
+
       if (req.method === 'GET' && url.pathname === '/notion/custom-agent/context') {
         const result = engine.buildProjectReview(url.searchParams.get('project_id'));
         const projectScope = buildNotionProjectScope(result.project);
@@ -1700,6 +2368,8 @@ export function createCortexServer(options = {}) {
 
         const result = engine.createInboxItem({
           projectId: body.project_id,
+          threadKey: body.thread_key,
+          threadLabel: body.thread_label,
           queue: body.queue,
           objectType: body.object_type,
           actionType: body.action_type,
@@ -1760,6 +2430,8 @@ export function createCortexServer(options = {}) {
 
         const result = engine.createSuggestion({
           projectId: body.project_id,
+          threadKey: body.thread_key,
+          threadLabel: body.thread_label,
           sourceType: body.source_type,
           sourceRef: body.source_ref,
           documentRef: body.document_ref,
@@ -1788,11 +2460,22 @@ export function createCortexServer(options = {}) {
           suggestionId: suggestionAcceptMatch[1],
           appliedAt: body.applied_at,
         });
-        projector.projectSuggestionOutcome(result.suggestion);
+        const projections = projector.projectSuggestionOutcome(result.suggestion, {
+          reviewNote: body.review_note || body.reviewNote,
+          reviewActor: body.review_actor || body.reviewActor,
+        });
 
         return sendJson(res, 200, {
           ok: true,
           suggestion: mapSuggestionForApi(result.suggestion),
+          projections: projections.map((projection) => ({
+            memory: mapMemoryForApi(projection.memory),
+            sources: (projection.sources || []).map(mapMemorySourceForApi),
+            reviewer_assessment: projection.reviewerAssessment || null,
+            reviewerAssessment: projection.reviewerAssessment || null,
+            inbox_item: mapInboxForApi(projection.inboxItem),
+            inboxItem: mapInboxForApi(projection.inboxItem),
+          })),
         });
       }
 
@@ -1802,11 +2485,26 @@ export function createCortexServer(options = {}) {
           suggestionId: suggestionRejectMatch[1],
           rejectedReason: body.rejected_reason,
         });
-        projector.projectSuggestionOutcome(result.suggestion);
+        const skipMemoryProjection =
+          parseOptionalBoolean(body.skip_memory_projection || body.skipMemoryProjection) === true;
+        const projections = skipMemoryProjection
+          ? []
+          : projector.projectSuggestionOutcome(result.suggestion, {
+              reviewNote: body.review_note || body.reviewNote,
+              reviewActor: body.review_actor || body.reviewActor,
+            });
 
         return sendJson(res, 200, {
           ok: true,
           suggestion: mapSuggestionForApi(result.suggestion),
+          projections: projections.map((projection) => ({
+            memory: mapMemoryForApi(projection.memory),
+            sources: (projection.sources || []).map(mapMemorySourceForApi),
+            reviewer_assessment: projection.reviewerAssessment || null,
+            reviewerAssessment: projection.reviewerAssessment || null,
+            inbox_item: mapInboxForApi(projection.inboxItem),
+            inboxItem: mapInboxForApi(projection.inboxItem),
+          })),
         });
       }
 
@@ -1919,6 +2617,21 @@ export function createCortexServer(options = {}) {
           ok: true,
           commandId: result.commandId,
           isDuplicate: result.isDuplicate,
+          command: mapCommandForApi(result.command),
+          comment_intent: result.commentIntent.intent,
+          commentIntent: result.commentIntent.intent,
+          comment_task_state: result.commentIntent.taskState,
+          commentTaskState: result.commentIntent.taskState,
+          comment_execution_policy: result.commentIntent.executionPolicy,
+          commentExecutionPolicy: result.commentIntent.executionPolicy,
+          comment_executable: result.commentIntent.executable,
+          commentExecutable: result.commentIntent.executable,
+          comment_allowed: result.commentIntent.allowed,
+          commentAllowed: result.commentIntent.allowed,
+          comment_confidence: result.commentIntent.confidence,
+          commentConfidence: result.commentIntent.confidence,
+          comment_reason: result.commentIntent.reason,
+          commentReason: result.commentIntent.reason,
         });
       }
 
@@ -1986,6 +2699,12 @@ export function createCortexServer(options = {}) {
           });
         }
 
+        const structuredCommand = parseStructuredNotionCommand(body);
+        if (structuredCommand) {
+          const response = dispatchStructuredNotionCommand(body, structuredCommand, projectId);
+          return sendJson(res, 200, response);
+        }
+
         const decisionInput = buildNotionCustomAgentDecisionInput(body);
         if (decisionInput) {
           const result = engine.createDecision({
@@ -2048,10 +2767,24 @@ export function createCortexServer(options = {}) {
           isDuplicate: result.isDuplicate,
           collaboration_mode: 'custom_agent',
           collaborationMode: 'custom_agent',
-          workflow_path: 'command',
-          workflowPath: 'command',
-          signal_level: 'green',
-          signalLevel: 'green',
+          workflow_path: result.commentIntent.executable ? 'command' : 'comment_triage',
+          workflowPath: result.commentIntent.executable ? 'command' : 'comment_triage',
+          signal_level: signalLevelFromCommentIntent(result.commentIntent),
+          signalLevel: signalLevelFromCommentIntent(result.commentIntent),
+          comment_intent: result.commentIntent.intent,
+          commentIntent: result.commentIntent.intent,
+          comment_task_state: result.commentIntent.taskState,
+          commentTaskState: result.commentIntent.taskState,
+          comment_execution_policy: result.commentIntent.executionPolicy,
+          commentExecutionPolicy: result.commentIntent.executionPolicy,
+          comment_executable: result.commentIntent.executable,
+          commentExecutable: result.commentIntent.executable,
+          comment_allowed: result.commentIntent.allowed,
+          commentAllowed: result.commentIntent.allowed,
+          comment_confidence: result.commentIntent.confidence,
+          commentConfidence: result.commentIntent.confidence,
+          comment_reason: result.commentIntent.reason,
+          commentReason: result.commentIntent.reason,
           invoked_agent: body.invoked_agent || null,
           invokedAgent: body.invoked_agent || null,
           owner_agent: result.command.ownerAgent,
@@ -2418,6 +3151,8 @@ export function createCortexServer(options = {}) {
 
         const result = engine.createDecision({
           projectId: body.project_id,
+          threadKey: body.thread_key,
+          threadLabel: body.thread_label,
           signalLevel: body.signal_level,
           blockingLevel: body.blocking_level,
           question: body.question,
@@ -2468,6 +3203,8 @@ export function createCortexServer(options = {}) {
 
         const result = engine.createTaskBrief({
           projectId: body.project_id,
+          threadKey: body.thread_key,
+          threadLabel: body.thread_label,
           title: body.title,
           why: body.why,
           context: body.context,
@@ -2475,6 +3212,7 @@ export function createCortexServer(options = {}) {
           status: body.status,
           ownerAgent: body.owner_agent,
           source: body.source,
+          sourceRef: body.source_ref,
           sourceUrl: body.source_url,
           sessionId: body.session_id,
           targetType: body.target_type,
@@ -2491,12 +3229,69 @@ export function createCortexServer(options = {}) {
         });
       }
 
+      if (req.method === 'POST' && url.pathname === '/task-briefs/update-status') {
+        const body = await readJsonBody(req);
+        requireFields(body, ['brief_id', 'status']);
+
+        return sendJson(res, 200, {
+          ok: true,
+          brief: mapTaskBriefForApi(
+            engine.updateTaskBriefStatus({
+              briefId: body.brief_id,
+              status: body.status,
+            }),
+          ),
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/task-briefs/update-source') {
+        const body = await readJsonBody(req);
+        requireFields(body, ['brief_id']);
+
+        const hasSourceRef = compact(body.source_ref || body.sourceRef).length > 0;
+        const hasSourceUrl = compact(body.source_url || body.sourceUrl).length > 0;
+        if (!hasSourceRef && !hasSourceUrl) {
+          throw new Error('task brief source update requires source_ref or source_url');
+        }
+
+        const result = engine.updateTaskBriefSource({
+          briefId: body.brief_id,
+          sourceRef: hasSourceRef ? body.source_ref || body.sourceRef : undefined,
+          sourceUrl: hasSourceUrl ? body.source_url || body.sourceUrl : undefined,
+        });
+
+        const projectId = body.project_id || result.brief.projectId;
+        const refreshUrl =
+          projectId && result.brief.threadKey
+            ? buildWorkspaceThreadHref(projectId, result.brief.threadKey, {
+                documentId: body.document_id || 'execution',
+                includeSynthetic: parseOptionalBoolean(body.include_synthetic) === true,
+                includeResidual: parseOptionalBoolean(body.include_residual) === true,
+                residualPattern: body.residual_pattern,
+                view: body.view,
+                threadFilter: body.thread_filter,
+                commentFilter: body.comment_filter,
+              })
+            : null;
+
+        return sendJson(res, 200, {
+          ok: true,
+          brief: mapTaskBriefForApi(result.brief),
+          thread_identity_backfill_stats: result.threadIdentityBackfillStats,
+          threadIdentityBackfillStats: result.threadIdentityBackfillStats,
+          refresh_url: refreshUrl,
+          refreshUrl,
+        });
+      }
+
       if (req.method === 'POST' && url.pathname === '/runs') {
         const body = await readJsonBody(req);
         requireFields(body, ['role', 'phase', 'title']);
 
         const result = engine.recordRun({
           projectId: body.project_id,
+          threadKey: body.thread_key,
+          threadLabel: body.thread_label,
           briefId: body.brief_id,
           commandId: body.command_id,
           decisionId: body.decision_id,
@@ -2547,6 +3342,8 @@ export function createCortexServer(options = {}) {
 
         const result = engine.recordCheckpoint({
           projectId: body.project_id,
+          threadKey: body.thread_key,
+          threadLabel: body.thread_label,
           runId: body.run_id,
           briefId: body.brief_id,
           commandId: body.command_id,

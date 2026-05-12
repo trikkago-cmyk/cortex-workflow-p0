@@ -371,11 +371,21 @@ export function inferExecutorActionPlan({ agentName, command }) {
     };
   }
 
-  if (matchesAny(instruction, [/同步.*notion/, /同步.*执行文档/, /同步.*项目索引/, /刷新.*执行记录/, /更新.*执行记录/])) {
+  if (
+    matchesAny(instruction, [
+      /同步.*notion/,
+      /同步.*执行文档/,
+      /同步.*项目索引/,
+      /刷新.*执行记录/,
+      /更新.*执行记录/,
+      /更新.*(?:项目)?(?:执行)?(?:最新)?(?:动态|进展|状态).*文档/,
+      /(?:同步|写入|补齐).*(?:最新)?(?:动态|进展|状态).*文档/,
+    ])
+  ) {
     return {
       type: 'sync_notion_surfaces',
-      scripts: [],
-      replyText: '当前已经切到 Custom Agent + MCP 主路径，不再由本地进程主动 push 执行页、review 页或项目索引。',
+      scripts: ['execution:notion-sync'],
+      replyText: '已执行：Cortex 已把当前项目执行动态同步到 Notion 执行文档。',
       resultSummary: `${agentName} executed action: sync notion surfaces`,
     };
   }
@@ -495,6 +505,10 @@ export function inferExecutorActionPlan({ agentName, command }) {
 
 export function createExecutorActionHandler(options = {}) {
   const cwd = options.cwd || process.cwd();
+  const env = {
+    ...process.env,
+    ...(options.env || {}),
+  };
   const fetchImpl = options.fetchImpl || fetch;
   const cortexBaseUrl = options.cortexBaseUrl || process.env.CORTEX_BASE_URL || 'http://127.0.0.1:19100';
   const syncPreferencesFile =

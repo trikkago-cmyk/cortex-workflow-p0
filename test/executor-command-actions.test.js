@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createExecutorActionHandler } from '../src/executor-command-actions.js';
+import { createExecutorActionHandler, inferExecutorActionPlan } from '../src/executor-command-actions.js';
 import { inferRouterTarget } from '../src/executor-multi-agent-handler.js';
 import { createCortexServer } from '../src/server.js';
 import { createMultiAgentExecutor } from '../src/executor-multi-agent-handler.js';
@@ -127,6 +127,48 @@ test('router sends structured review directives to agent-notion-worker', () => {
     }),
     'agent-notion-worker',
   );
+  assert.equal(
+    inferRouterTarget({
+      instruction: '更新目前项目执行的最新动态到文档中',
+    }),
+    'agent-notion-worker',
+  );
+});
+
+test('notion update-dynamics comment runs execution document sync action', async () => {
+  const scripts = [];
+  const handler = createExecutorActionHandler({
+    runScript(scriptName) {
+      scripts.push(scriptName);
+      return {
+        scriptName,
+        stdout: '',
+        stderr: '',
+      };
+    },
+    logger: { warn() {} },
+  });
+
+  const plan = inferExecutorActionPlan({
+    agentName: 'agent-notion-worker',
+    command: {
+      instruction: '更新目前项目执行的最新动态到文档中',
+    },
+  });
+  assert.equal(plan.type, 'sync_notion_surfaces');
+  assert.deepEqual(plan.scripts, ['execution:notion-sync']);
+
+  const result = await handler({
+    agentName: 'agent-notion-worker',
+    projectId: 'PRJ-cortex',
+    command: {
+      instruction: '更新目前项目执行的最新动态到文档中',
+    },
+  });
+
+  assert.equal(result.action_type, 'sync_notion_surfaces');
+  assert.deepEqual(scripts, ['execution:notion-sync']);
+  assert.match(result.reply_text, /已把当前项目执行动态同步到 Notion 执行文档/);
 });
 
 test('notion comment directive can flow through router-owned command and update Cortex state directly', async (t) => {

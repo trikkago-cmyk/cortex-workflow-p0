@@ -5,12 +5,18 @@ import {
   normalizeWhitespace,
 } from './workflow-engine.js';
 import { extractCommentRouting } from './comment-routing.js';
+import {
+  classifyCommentIntent,
+  commandStatusFromCommentIntent,
+  encodeCommentIntentEventKey,
+} from './comment-intent.js';
 import { queueRedDecisionAlert } from './adapter.js';
 import { buildRedAlertPayload } from './outbox.js';
 import { formatDisplayTime } from './notion-review-sync.js';
 import { createHash } from 'node:crypto';
 import { isLocalNotificationChannel } from './local-notification.js';
 import { reviewMemoryCandidate } from './memory-reviewer.js';
+import { deriveThreadIdentity, threadSpecificity } from './thread-identity.js';
 
 function defaultProjectName(projectId) {
   if (projectId === 'PRJ-cortex') {
@@ -21,6 +27,57 @@ function defaultProjectName(projectId) {
 
 function stableHash(value) {
   return createHash('sha1').update(String(value || ''), 'utf8').digest('hex').slice(0, 12);
+}
+
+function compact(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function refToId(sourceRef, prefix, fallbackPrefix) {
+  const raw = compact(sourceRef);
+  if (!raw) {
+    return null;
+  }
+
+  if (prefix && raw.startsWith(`${prefix}:`)) {
+    return raw.slice(prefix.length + 1);
+  }
+
+  if (fallbackPrefix && raw.startsWith(fallbackPrefix)) {
+    return raw;
+  }
+
+  return null;
+}
+
+function preferResolvedThreadIdentity(currentIdentity, candidateIdentity) {
+  if (!candidateIdentity?.key) {
+    return currentIdentity;
+  }
+  if (!currentIdentity?.key) {
+    return candidateIdentity;
+  }
+
+  const currentSpecificity = threadSpecificity(currentIdentity.key);
+  const candidateSpecificity = threadSpecificity(candidateIdentity.key);
+
+  if (candidateIdentity.concrete && !currentIdentity.concrete) {
+    return {
+      ...candidateIdentity,
+      label: candidateIdentity.label || currentIdentity.label || candidateIdentity.key,
+    };
+  }
+
+  if (candidateSpecificity > currentSpecificity) {
+    return {
+      ...candidateIdentity,
+      label: candidateIdentity.label || currentIdentity.label || candidateIdentity.key,
+    };
+  }
+
+  return currentIdentity;
 }
 
 function nowIso(clock) {
@@ -157,6 +214,18 @@ const DECISION_STATUSES = new Set([
 
 const TERMINAL_DECISION_STATUSES = new Set(['approved', 'stopped', 'resolved', 'archived']);
 
+const BRIEF_STATUSES = new Set([
+  'draft',
+  'aligned',
+  'new',
+  'in_progress',
+  'done',
+  'completed',
+  'blocked',
+  'cancelled',
+  'archived',
+]);
+
 const COMMAND_STATUSES = new Set([
   'new',
   'claimed',
@@ -193,6 +262,31 @@ function isDecisionTerminalStatus(status) {
   return TERMINAL_DECISION_STATUSES.has(String(status || '').trim());
 }
 
+function hasThreadSignals(input = {}) {
+  return Boolean(
+    input.threadKey ||
+      input.threadLabel ||
+      input.thread_key ||
+      input.thread_label ||
+      input.sourceUrl ||
+      input.source_url ||
+      input.sourceRef ||
+      input.source_ref ||
+      input.channelSessionId ||
+      input.channel_session_id ||
+      input.sessionId ||
+      input.session_id ||
+      input.targetType ||
+      input.target_type ||
+      input.targetId ||
+      input.target_id ||
+      input.pageId ||
+      input.page_id ||
+      input.discussionId ||
+      input.discussion_id,
+  );
+}
+
 export class CortexEngine {
   constructor(options = {}) {
     this.store = options.store;
@@ -220,6 +314,93 @@ export class CortexEngine {
             projectId,
             name: defaultProjectName(projectId),
           },
+    );
+  }
+
+  buildThreadFallback(projectId) {
+    const existingProject = this.store.getProject(projectId);
+    return {
+      projectId,
+      projectName: existingProject?.name || defaultProjectName(projectId),
+    };
+  }
+
+  deriveExplicitThreadIdentity(projectId, input = {}, extra = {}) {
+    return deriveThreadIdentity(
+      {
+        ...extra,
+        threadKey: input.threadKey || input.thread_key,
+        threadLabel: input.threadLabel || input.thread_label,
+        title: input.title,
+        question: input.question,
+        instruction: input.instruction,
+        summary: input.summary,
+        target: input.target,
+        documentRef: input.documentRef || input.document_ref,
+        sourceUrl: input.sourceUrl || input.source_url,
+        sourceRef: input.sourceRef || input.source_ref,
+        channelSessionId: input.channelSessionId || input.channel_session_id || input.sessionId || input.session_id,
+        targetType: input.targetType || input.target_type,
+        targetId: input.targetId || input.target_id,
+        pageId: input.pageId || input.page_id,
+        discussionId: input.discussionId || input.discussion_id,
+        commentId: input.commentId || input.comment_id,
+      },
+      this.buildThreadFallback(projectId),
+    );
+  }
+
+  resolveLinkedThreadIdentity(projectId, input = {}) {
+    const payload = input.payload && typeof input.payload === 'object' ? input.payload : {};
+    const commandId =
+      compact(input.commandId || input.command_id) ||
+      refToId(input.sourceRef || input.source_ref, 'command', 'CMD-') ||
+      compact(payload.command_id || payload.commandId);
+    const briefId =
+      compact(input.briefId || input.brief_id) ||
+      refToId(input.sourceRef || input.source_ref, 'brief', 'TB-') ||
+      compact(payload.brief_id || payload.briefId);
+    const decisionId =
+      compact(input.decisionId || input.decision_id) ||
+      refToId(input.sourceRef || input.source_ref, 'decision', 'DR-') ||
+      compact(payload.decision_id || payload.decisionId);
+    const runId =
+      compact(input.runId || input.run_id) ||
+      refToId(input.sourceRef || input.source_ref, 'run', 'RUN-') ||
+      compact(payload.run_id || payload.runId);
+    const checkpointId =
+      compact(input.checkpointId || input.checkpoint_id) ||
+      refToId(input.sourceRef || input.source_ref, 'checkpoint', 'CP-') ||
+      compact(payload.checkpoint_id || payload.checkpointId);
+
+    const linkedRecords = [
+      commandId ? this.store.getCommand(commandId) : null,
+      briefId ? this.store.getTaskBrief(briefId) : null,
+      decisionId ? this.store.getDecisionRequest(decisionId) : null,
+      runId ? this.store.getRun(runId) : null,
+      checkpointId ? this.store.getCheckpoint(checkpointId) : null,
+    ].filter(Boolean);
+
+    let resolved = null;
+    for (const record of linkedRecords) {
+      const identity = this.deriveExplicitThreadIdentity(projectId, {
+        ...record,
+        threadKey: record.threadKey || record.thread_key,
+        threadLabel: record.threadLabel || record.thread_label,
+      });
+      resolved = preferResolvedThreadIdentity(resolved, identity);
+    }
+
+    return resolved;
+  }
+
+  resolveThreadIdentity(projectId, input = {}, extra = {}) {
+    const explicitThread =
+      hasThreadSignals(input) || hasThreadSignals(extra) ? this.deriveExplicitThreadIdentity(projectId, input, extra) : null;
+    const linkedThread = this.resolveLinkedThreadIdentity(projectId, input);
+    return preferResolvedThreadIdentity(
+      explicitThread || this.deriveExplicitThreadIdentity(projectId, input, extra),
+      linkedThread,
     );
   }
 
@@ -252,9 +433,12 @@ export class CortexEngine {
   ingestImMessage(input) {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
+    const thread = this.resolveThreadIdentity(projectId, input);
 
     const result = this.store.createOrGetCommand({
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       source: 'openclaw_im_message',
       channel: 'enterprise_im',
       targetType: input.targetType,
@@ -278,10 +462,13 @@ export class CortexEngine {
   ingestImAction(input) {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
+    const thread = this.resolveThreadIdentity(projectId, input);
     const decisionStatus = input.targetType === 'decision' ? decisionStatusFromAction(input.action) : null;
 
     const result = this.store.createOrGetCommand({
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       source: 'openclaw_im_action',
       channel: 'enterprise_im',
       targetType: input.targetType,
@@ -321,18 +508,27 @@ export class CortexEngine {
     this.ensureProject(projectId);
     const routing = extractCommentRouting(input.body);
     const normalizedBody = routing.strippedBody || input.body;
+    const commentIntent = classifyCommentIntent(normalizedBody);
+    const thread = this.resolveThreadIdentity(projectId, input, {
+      instruction: normalizeWhitespace(commentIntent.instruction || stripBracketedPrefix(normalizedBody)),
+    });
 
     const result = this.store.createOrGetCommand({
+      parentCommandId: input.parentCommandId || null,
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       source: 'notion_comment',
       channel: 'notion',
       targetType: input.targetType,
       targetId: input.targetId,
-      parsedAction: detectAction(normalizedBody, 'improve'),
-      instruction: normalizeWhitespace(stripBracketedPrefix(normalizedBody)),
+      parsedAction: commentIntent.parsedAction || detectAction(normalizedBody, 'improve'),
+      instruction: normalizeWhitespace(commentIntent.instruction || stripBracketedPrefix(normalizedBody)),
       contextQuote: normalizeWhitespace(input.contextQuote),
       anchorBlockId: input.anchorBlockId,
       ownerAgent: input.ownerAgent || routing.ownerAgent,
+      eventKey: encodeCommentIntentEventKey(commentIntent),
+      status: commandStatusFromCommentIntent(commentIntent),
       sourceUrl: input.sourceUrl || `notion://page/${input.pageId}/discussion/${input.discussionId}/comment/${input.commentId}`,
       idempotencyKey: `comment:${input.discussionId}:${input.commentId}`,
     });
@@ -342,12 +538,14 @@ export class CortexEngine {
       commandId: result.command.commandId,
       isDuplicate: result.deduped,
       command: result.command,
+      commentIntent,
     };
   }
 
   createDecision(input) {
     const projectId = input.projectId || this.defaultProjectId;
     const project = this.ensureProject(projectId);
+    const thread = this.resolveThreadIdentity(projectId, input);
 
     const signalLevel = normalizeSignalLevel(input.signalLevel || input.blockingLevel);
     if (!signalLevel) {
@@ -356,6 +554,8 @@ export class CortexEngine {
 
     const result = this.store.createOrGetDecisionRequest({
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       signalLevel,
       blockingLevel: legacyBlockingLevelFromSignal(signalLevel),
       status: signalLevel === 'red' ? 'needs_review' : 'proposed',
@@ -424,9 +624,14 @@ export class CortexEngine {
   createTaskBrief(input) {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
+    const thread = this.resolveThreadIdentity(projectId, input, {
+      summary: normalizeWhitespace(input.what),
+    });
 
     const result = this.store.createOrGetTaskBrief({
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       title: summarizeTitle(input.title, input.what),
       why: normalizeWhitespace(input.why),
       context: normalizeWhitespace(input.context),
@@ -434,6 +639,7 @@ export class CortexEngine {
       status: input.status || 'draft',
       ownerAgent: input.ownerAgent,
       source: input.source || 'agent_brief',
+      sourceRef: input.sourceRef || input.source_ref,
       sourceUrl: input.sourceUrl,
       channelSessionId: input.channelSessionId || input.sessionId,
       targetType: input.targetType,
@@ -455,9 +661,15 @@ export class CortexEngine {
   recordRun(input) {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
+    const thread = this.resolveThreadIdentity(projectId, input, {
+      title: summarizeTitle(input.title, input.summary || input.commandInstruction || input.phase || '未命名运行'),
+      summary: normalizeWhitespace(input.summary),
+    });
 
     const result = this.store.createOrGetRun({
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       briefId: input.briefId,
       commandId: input.commandId,
       decisionId: input.decisionId,
@@ -507,9 +719,15 @@ export class CortexEngine {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
     const normalizedSignalLevel = input.signalLevel ? normalizeSignalLevel(input.signalLevel) : null;
+    const thread = this.resolveThreadIdentity(projectId, input, {
+      title: summarizeTitle(input.title, input.summary || input.nextStep || input.stage || 'checkpoint'),
+      summary: normalizeWhitespace(input.summary),
+    });
 
     const result = this.store.createOrGetCheckpoint({
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       runId: input.runId,
       briefId: input.briefId,
       commandId: input.commandId,
@@ -547,11 +765,16 @@ export class CortexEngine {
   recordReceipt(input) {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
+    const thread = this.resolveThreadIdentity(projectId, input, {
+      summary: input.payload?.summary || input.payload?.details || input.target,
+    });
 
     const result = this.store.recordReceipt({
       receiptId: input.receiptId,
       commandId: input.commandId,
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       sessionId: input.sessionId,
       status: input.status,
       receiptType: input.receiptType,
@@ -744,9 +967,18 @@ export class CortexEngine {
   createInboxItem(input) {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
+    const thread = this.resolveThreadIdentity(projectId, input, {
+      targetType: input.payload?.target_type || input.payload?.targetType || input.targetType || input.target_type,
+      targetId: input.payload?.target_id || input.payload?.targetId || input.targetId || input.target_id,
+      pageId: input.payload?.page_id || input.payload?.pageId || input.pageId || input.page_id,
+      discussionId: input.payload?.discussion_id || input.payload?.discussionId || input.discussionId || input.discussion_id,
+      commentId: input.payload?.comment_id || input.payload?.commentId || input.commentId || input.comment_id,
+    });
 
     const result = this.store.createOrGetInboxItem({
       projectId,
+      threadKey: thread.key,
+      threadLabel: thread.label,
       queue: normalizeWhitespace(input.queue),
       objectType: normalizeWhitespace(input.objectType),
       actionType: normalizeWhitespace(input.actionType),
@@ -802,9 +1034,12 @@ export class CortexEngine {
   createSuggestion(input) {
     const projectId = input.projectId || this.defaultProjectId;
     this.ensureProject(projectId);
+    const threadIdentity = this.resolveThreadIdentity(projectId, input);
 
     const result = this.store.createOrGetSuggestion({
       projectId,
+      threadKey: threadIdentity?.key || null,
+      threadLabel: threadIdentity?.label || null,
       sourceType: normalizeWhitespace(input.sourceType),
       sourceRef: input.sourceRef,
       documentRef: input.documentRef,
@@ -953,6 +1188,8 @@ export class CortexEngine {
     const result = this.store.createOrGetCommand({
       parentCommandId: parent.commandId,
       projectId: parent.projectId,
+      threadKey: parent.threadKey || null,
+      threadLabel: parent.threadLabel || null,
       channel: parent.channel,
       targetType: input.targetType || parent.targetType,
       targetId: input.targetId || parent.targetId,
@@ -1017,6 +1254,40 @@ export class CortexEngine {
     }
 
     return updatedDecision;
+  }
+
+  updateTaskBriefStatus(input) {
+    const status = String(input.status || '').trim();
+    if (!BRIEF_STATUSES.has(status)) {
+      throw new Error(`Unsupported task brief status ${input.status}`);
+    }
+
+    return this.store.updateTaskBriefStatus({
+      briefId: input.briefId,
+      status,
+      allowMissing: Boolean(input.allowMissing),
+    });
+  }
+
+  updateTaskBriefSource(input) {
+    const hasSourceRef = Object.prototype.hasOwnProperty.call(input, 'sourceRef') || Object.prototype.hasOwnProperty.call(input, 'source_ref');
+    const hasSourceUrl = Object.prototype.hasOwnProperty.call(input, 'sourceUrl') || Object.prototype.hasOwnProperty.call(input, 'source_url');
+    if (!hasSourceRef && !hasSourceUrl) {
+      throw new Error('Task brief source update requires source_ref or source_url');
+    }
+
+    const sourceRef = hasSourceRef ? normalizeOptionalText(input.sourceRef ?? input.source_ref) : undefined;
+    const sourceUrl = hasSourceUrl ? normalizeOptionalText(input.sourceUrl ?? input.source_url) : undefined;
+    if (sourceRef === null && sourceUrl === null) {
+      throw new Error('Task brief source update requires at least one non-empty source field');
+    }
+
+    return this.store.updateTaskBriefSource({
+      briefId: input.briefId,
+      sourceRef,
+      sourceUrl,
+      allowMissing: Boolean(input.allowMissing),
+    });
   }
 
   updateCommandStatus(input) {

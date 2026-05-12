@@ -1,8 +1,22 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { defaultAgentRegistryFile, deriveExecutorPoolFromAgentRegistry } from '../src/agent-registry.js';
-import { customAgentMcpEnabled, localNotificationPollerEnabled, panghuPollerEnabled } from '../src/automation-processes.js';
+import {
+  defaultServerDirectLaunchAgentPath,
+  defaultServerDirectLaunchdLabel,
+  launchctlDomain,
+} from '../src/launchd.js';
+import { findRepoNodeScriptListenerPid } from '../src/automation-runtime-ports.js';
+import {
+  clearAutomationEnsurePause,
+  customAgentMcpEnabled,
+  localNotificationPollerEnabled,
+  notionCommentPollerShouldRun,
+  panghuPollerEnabled,
+  readAutomationEnsurePause,
+} from '../src/automation-processes.js';
+import { waitForAutomationStackReady } from '../src/automation-status.js';
 import { notionCollaborationMode } from '../src/notion-collaboration-mode.js';
 import { buildExecutorWorkerEnv, loadExecutorPoolConfig } from '../src/executor-pool.js';
 import { resolvePanghuRuntimeConfig } from '../src/panghu-runtime.js';
@@ -40,6 +54,8 @@ const panghuSendToken = process.env.PANGHU_SEND_TOKEN || '';
 const panghuPollIntervalMs = String(process.env.PANGHU_POLL_INTERVAL_MS || 1500);
 const panghuAllowDryRun = process.env.PANGHU_ALLOW_DRY_RUN || '';
 const localNotificationPollIntervalMs = String(process.env.LOCAL_NOTIFICATION_POLL_INTERVAL_MS || 1000);
+const notionCommentPollIntervalMs = String(process.env.NOTION_COMMENT_POLLER_INTERVAL_MS || 5000);
+const notionCommentPollStatePath = process.env.NOTION_COMMENT_POLLER_STATE_PATH || '';
 const cortexMcpHost = process.env.CORTEX_MCP_HOST || '127.0.0.1';
 const cortexMcpPort = String(process.env.CORTEX_MCP_PORT || 19101);
 const cortexMcpAllowedHosts = process.env.CORTEX_MCP_ALLOWED_HOSTS || '';
@@ -52,6 +68,109 @@ const panghuRuntime = resolvePanghuRuntimeConfig({
   requireRealSender: '1',
   allowDryRun: panghuAllowDryRun,
 });
+const startSource = String(process.env.AUTOMATION_START_SOURCE || 'manual').trim() || 'manual';
+const serverDirectLabel = process.env.CORTEX_SERVER_DIRECT_LABEL || defaultServerDirectLaunchdLabel();
+const serverDirectPlistPath =
+  process.env.CORTEX_SERVER_DIRECT_PLIST || defaultServerDirectLaunchAgentPath({ label: serverDirectLabel });
+const launchdDomain = launchctlDomain();
+const ensurePause = readAutomationEnsurePause({ runtimeDir });
+
+if (ensurePause.active && startSource === 'automation_ensure' && ensurePause.payload?.reason === 'manual_stop') {
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        runtimeDir,
+        notionCollabMode,
+        paused: true,
+        pause: ensurePause.payload,
+        startSource,
+        results: [],
+        readiness: null,
+      },
+      null,
+      2,
+    ),
+  );
+  process.exit(0);
+}
+
+const clearedEnsurePause = ensurePause.active ? clearAutomationEnsurePause(runtimeDir) : false;
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+function inspectServerDirect() {
+  const printResult = spawnSync('launchctl', ['print', `${launchdDomain}/${serverDirectLabel}`], {
+    cwd,
+    encoding: 'utf8',
+  });
+  return {
+    label: serverDirectLabel,
+    plistPath: serverDirectPlistPath,
+    loaded: printResult.status === 0,
+    status: printResult.status ?? 1,
+    stdout: printResult.stdout.trim() || null,
+    stderr: printResult.stderr.trim() || null,
+  };
+}
+
+async function ensureServerDirectAvailable() {
+  const initial = inspectServerDirect();
+  if (!existsSync(serverDirectPlistPath)) {
+    return {
+      ...initial,
+      action: 'missing_plist',
+      ready: false,
+      listenerPid: null,
+    };
+  }
+
+  if (!initial.loaded) {
+    const bootstrapResult = spawnSync('launchctl', ['bootstrap', launchdDomain, serverDirectPlistPath], {
+      cwd,
+      encoding: 'utf8',
+    });
+    const afterBootstrap = inspectServerDirect();
+    if (bootstrapResult.status !== 0 && afterBootstrap.loaded !== true) {
+      return {
+        ...afterBootstrap,
+        action: 'bootstrap_failed',
+        ready: false,
+        listenerPid: null,
+        bootstrap: {
+          status: bootstrapResult.status ?? 1,
+          stdout: bootstrapResult.stdout.trim() || null,
+          stderr: bootstrapResult.stderr.trim() || null,
+        },
+      };
+    }
+  }
+
+  const deadline = Date.now() + 5_000;
+  while (Date.now() <= deadline) {
+    const listenerPid = resolveExistingRepoListenerPid('cortex-server');
+    if (listenerPid) {
+      return {
+        ...inspectServerDirect(),
+        action: initial.loaded ? 'already_loaded' : 'bootstrapped',
+        ready: true,
+        listenerPid,
+      };
+    }
+    await sleep(150);
+  }
+
+  return {
+    ...inspectServerDirect(),
+    action: initial.loaded ? 'already_loaded' : 'bootstrapped',
+    ready: false,
+    listenerPid: null,
+  };
+}
+
+const serverDirect = startSource === 'automation_ensure' ? null : await ensureServerDirectAvailable();
 
 function resolveCortexPort(baseUrl) {
   try {
@@ -99,12 +218,59 @@ function isRunning(pid) {
   }
 }
 
+function listenerSpecForProcess(name) {
+  if (name === 'cortex-server') {
+    return {
+      port: resolveCortexPort(cortexBaseUrl),
+      scriptRelativePath: 'src/server.js',
+    };
+  }
+  if (name === 'cortex-custom-agent-mcp') {
+    return {
+      port: cortexMcpPort,
+      scriptRelativePath: 'src/cortex-mcp-server.js',
+    };
+  }
+  if (name === 'executor-multi-agent-handler') {
+    return {
+      port: executorWebhookPort,
+      scriptRelativePath: 'src/executor-multi-agent-handler.js',
+    };
+  }
+  return null;
+}
+
+function resolveExistingRepoListenerPid(name) {
+  const spec = listenerSpecForProcess(name);
+  if (!spec) {
+    return null;
+  }
+
+  return findRepoNodeScriptListenerPid({
+    cwd,
+    port: spec.port,
+    scriptRelativePath: spec.scriptRelativePath,
+  });
+}
+
 function spawnDetached(name, args, extraEnv = {}) {
   ensureDir(runtimeDir);
   const pidFile = pidFileFor(name);
   const currentPid = readPid(pidFile);
   if (isRunning(currentPid)) {
     return { name, status: 'already_running', pid: currentPid };
+  }
+
+  const listenerPid = resolveExistingRepoListenerPid(name);
+  if (listenerPid) {
+    writeFileSync(pidFile, `${listenerPid}\n`, 'utf8');
+    return {
+      name,
+      status: 'listener_reused',
+      pid: listenerPid,
+      logPath: logFileFor(name),
+      recoveredBy: 'repo_listener',
+    };
   }
 
   const logPath = logFileFor(name);
@@ -127,12 +293,20 @@ function spawnDetached(name, args, extraEnv = {}) {
 const results = [];
 
 results.push(
-  spawnDetached('cortex-server', ['src/server.js'], {
-    PORT: resolveCortexPort(cortexBaseUrl),
-    CORTEX_DB_PATH: cortexDbPath,
-    CORTEX_DEFAULT_PROJECT_ID: cortexDefaultProjectId,
-    CORTEX_DEFAULT_CHANNEL: cortexDefaultChannel,
-  }),
+  serverDirect?.ready
+    ? {
+        name: 'cortex-server',
+        status: 'listener_reused',
+        pid: serverDirect.listenerPid,
+        logPath: logFileFor('cortex-server'),
+        recoveredBy: 'server_direct_launchd',
+      }
+    : spawnDetached('cortex-server', ['src/server.js'], {
+        PORT: resolveCortexPort(cortexBaseUrl),
+        CORTEX_DB_PATH: cortexDbPath,
+        CORTEX_DEFAULT_PROJECT_ID: cortexDefaultProjectId,
+        CORTEX_DEFAULT_CHANNEL: cortexDefaultChannel,
+      }),
 );
 
 if (customAgentMcpEnabled(process.env)) {
@@ -198,6 +372,17 @@ if (localNotificationPollerEnabled(process.env, { cwd, dbPath: cortexDbPath })) 
   );
 }
 
+if (notionCommentPollerShouldRun(process.env, { cwd, dbPath: cortexDbPath })) {
+  results.push(
+    spawnDetached('notion-comment-poller', ['src/notion-comment-poller.js'], {
+      CORTEX_BASE_URL: cortexBaseUrl,
+      CORTEX_DB_PATH: cortexDbPath,
+      NOTION_COMMENT_POLLER_INTERVAL_MS: notionCommentPollIntervalMs,
+      ...(notionCommentPollStatePath ? { NOTION_COMMENT_POLLER_STATE_PATH: notionCommentPollStatePath } : {}),
+    }),
+  );
+}
+
 if (existsSync(agentRegistryFile) || existsSync(executorPoolFile)) {
   const pool = existsSync(agentRegistryFile)
     ? deriveExecutorPoolFromAgentRegistry(agentRegistryFile, {
@@ -224,4 +409,30 @@ if (existsSync(agentRegistryFile) || existsSync(executorPoolFile)) {
   }
 }
 
-console.log(JSON.stringify({ ok: true, runtimeDir, notionCollabMode, results }, null, 2));
+const expectedNames = results
+  .filter((result) => result.status !== 'skipped')
+  .map((result) => result.name);
+
+const readiness = await waitForAutomationStackReady({
+  cwd,
+  runtimeDir,
+  cortexBaseUrl,
+  names: expectedNames,
+});
+
+const payload = {
+  ok: readiness.ok,
+  runtimeDir,
+  notionCollabMode,
+  startSource,
+  clearedEnsurePause,
+  serverDirect,
+  results,
+  readiness,
+};
+
+console.log(JSON.stringify(payload, null, 2));
+
+if (!readiness.ok) {
+  process.exitCode = 1;
+}

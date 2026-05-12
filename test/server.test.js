@@ -168,6 +168,21 @@ test('serves the P0 HTTP loop for commands, red decisions, and outbox ack', asyn
     result_summary: 'P0 数据流已落库并完成 ack 闭环。',
   });
   assert.equal(complete.body.command.status, 'done');
+
+  const linkedBrief = await postJson(baseUrl, '/task-briefs', {
+    project_id: 'PRJ-cortex',
+    title: '继承上游线程身份的任务简报',
+    why: '验证 brief 会跟随上游 command 的 thread identity，而不是退回 brief 自身线程。',
+    context: '这条简报只提供 source_ref，不额外提供 thread_key / session_id。',
+    what: '确保未来新增 brief 不再长出新的 brief:* 泛化线程。',
+    source: 'agent_brief',
+    source_ref: `command:${firstMessage.body.commandId}`,
+    idempotency_key: 'brief-linked-to-command',
+  });
+
+  assert.equal(linkedBrief.status, 200);
+  assert.equal(linkedBrief.body.brief.source_ref, `command:${firstMessage.body.commandId}`);
+  assert.equal(linkedBrief.body.brief.thread_key, 'session:your-user@corp');
   assert.equal(complete.body.command.ack, `ack:${firstMessage.body.commandId}`);
 
   const commands = await getJson(baseUrl, '/commands?project_id=PRJ-cortex');
@@ -723,6 +738,9 @@ test('routes notion comments to owner_agent queues without relying on @mentions'
 
   assert.equal(routedComment.status, 200);
   assert.equal(routedComment.body.ok, true);
+  assert.equal(routedComment.body.comment_intent, 'continue_task');
+  assert.equal(routedComment.body.comment_execution_policy, 'enqueue');
+  assert.equal(routedComment.body.comment_executable, true);
 
   const listed = await getJson(baseUrl, '/commands?project_id=PRJ-cortex&source=notion_comment&owner_agent=agent-pm');
   assert.equal(listed.status, 200);
@@ -730,6 +748,9 @@ test('routes notion comments to owner_agent queues without relying on @mentions'
   assert.equal(listed.body.commands[0].owner_agent, 'agent-pm');
   assert.equal(listed.body.commands[0].instruction, '继续执行吧');
   assert.equal(listed.body.commands[0].parsed_action, 'continue');
+  assert.equal(listed.body.commands[0].comment_intent, 'continue_task');
+  assert.equal(listed.body.commands[0].comment_execution_policy, 'enqueue');
+  assert.equal(listed.body.commands[0].comment_task_state, 'ready_to_execute');
 
   const wrongAgent = await postJson(baseUrl, '/commands/claim-next', {
     project_id: 'PRJ-cortex',
@@ -750,6 +771,60 @@ test('routes notion comments to owner_agent queues without relying on @mentions'
   assert.equal(rightAgent.body.command.command_id, routedComment.body.commandId);
   assert.equal(rightAgent.body.command.owner_agent, 'agent-pm');
   assert.equal(rightAgent.body.command.claimed_by, 'agent-pm');
+});
+
+test('keeps ambiguous notion comments visible in triage without making them claimable commands', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-comment-intent-triage-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-29T10:00:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const address = app.server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const comment = await postJson(baseUrl, '/webhook/notion-comment', {
+    project_id: 'PRJ-cortex',
+    target_type: 'page',
+    target_id: 'page-001',
+    page_id: 'page-001',
+    discussion_id: 'discussion-ambiguous-001',
+    comment_id: 'comment-ambiguous-001',
+    body: '我觉得这里不太对，看起来太复杂了',
+    owner_agent: 'agent-router',
+  });
+
+  assert.equal(comment.status, 200);
+  assert.equal(comment.body.ok, true);
+  assert.equal(comment.body.comment_intent, 'feedback');
+  assert.equal(comment.body.comment_execution_policy, 'inbox_only');
+  assert.equal(comment.body.comment_executable, false);
+
+  const commands = await getJson(baseUrl, '/commands?project_id=PRJ-cortex&source=notion_comment');
+  assert.equal(commands.status, 200);
+  assert.equal(commands.body.commands.length, 1);
+  assert.equal(commands.body.commands[0].status, 'archived');
+  assert.equal(commands.body.commands[0].comment_intent, 'feedback');
+
+  const claim = await postJson(baseUrl, '/commands/claim-next', {
+    project_id: 'PRJ-cortex',
+    source: 'notion_comment',
+    owner_agent: 'agent-router',
+    agent_name: 'agent-router',
+  });
+
+  assert.equal(claim.status, 200);
+  assert.equal(claim.body.command, null);
+
+  const inbox = await getJson(baseUrl, '/inbox?project_id=PRJ-cortex&queue=triage&status=open');
+  assert.equal(inbox.status, 200);
+  assert.equal(inbox.body.items.length, 1);
+  assert.equal(inbox.body.items[0].action_type, 'review');
+  assert.equal(inbox.body.items[0].payload.comment_intent, 'feedback');
+  assert.equal(inbox.body.items[0].payload.comment_execution_policy, 'inbox_only');
 });
 
 test('defaults red decisions to local notification when no IM route is configured', async (t) => {
@@ -891,6 +966,99 @@ test('supports manual reconciliation of decision and command statuses', async (t
   assert.equal(review.status, 200);
   assert.equal(review.body.summary.red_decisions.length, 0);
   assert.equal(review.body.summary.active_commands.length, 0);
+});
+
+test('supports updating task brief status via HTTP endpoint', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-brief-status-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-05-09T20:00:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const address = app.server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const brief = await postJson(baseUrl, '/task-briefs', {
+    project_id: 'PRJ-cortex',
+    title: '治理旧 brief 残留',
+    why: '需要验证线程治理面板可以直接更新 brief 状态。',
+    context: '这条 brief 目前还没有进入真实执行链。',
+    what: '支持把 brief 归档为历史草稿。',
+    status: 'draft',
+  });
+
+  assert.equal(brief.status, 200);
+
+  const updated = await postJson(baseUrl, '/task-briefs/update-status', {
+    brief_id: brief.body.brief.brief_id,
+    status: 'archived',
+  });
+
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.brief.status, 'archived');
+  assert.equal(updated.body.brief.brief_id, brief.body.brief.brief_id);
+});
+
+test('supports repairing task brief source via HTTP endpoint', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-brief-source-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-05-09T20:05:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const address = app.server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const commentResult = await postJson(baseUrl, '/webhook/notion-comment', {
+    project_id: 'PRJ-cortex',
+    target_type: 'page',
+    target_id: 'page-source-repair',
+    page_id: 'page-source-repair',
+    discussion_id: 'discussion-source-repair',
+    comment_id: 'comment-source-repair',
+    body: '请继续推进来源修补闭环',
+    owner_agent: 'agent-router',
+    source_url: 'notion://page/page-source-repair/discussion/discussion-source-repair/comment/comment-source-repair',
+  });
+
+  const brief = await postJson(baseUrl, '/task-briefs', {
+    project_id: 'PRJ-cortex',
+    title: '需要补来源的旧 brief',
+    why: '线程身份目前还不稳定。',
+    context: '先模拟一条没有稳定来源的历史简报。',
+    what: '后续通过 source_ref 把它挂回 Notion discussion。',
+    status: 'in_progress',
+  });
+
+  assert.equal(brief.status, 200);
+  assert.match(brief.body.brief.thread_key, /^project:|^brief:/);
+
+  const updated = await postJson(baseUrl, '/task-briefs/update-source', {
+    brief_id: brief.body.brief.brief_id,
+    source_ref: `command:${commentResult.body.command.commandId}`,
+    project_id: 'PRJ-cortex',
+    document_id: 'execution',
+    include_residual: true,
+    residual_pattern: 'checkpoint_backed_brief',
+    comment_filter: 'triage',
+  });
+
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.ok, true);
+  assert.equal(updated.body.brief.source_ref, `command:${commentResult.body.command.commandId}`);
+  assert.equal(updated.body.brief.thread_key, 'notion:page-source-repair:discussion-source-repair');
+  assert.match(updated.body.brief.thread_label, /Notion|继续推进|来源修补/);
+  assert.ok(updated.body.thread_identity_backfill_stats.taskBriefs >= 1);
+  assert.equal(
+    updated.body.refresh_url,
+    '/workspace/threads/notion%3Apage-source-repair%3Adiscussion-source-repair?project_id=PRJ-cortex&include_residual=1&residual_pattern=checkpoint_backed_brief&comment_filter=triage&document_id=execution',
+  );
 });
 
 test('supports command filtering and claim-next for agent inbox polling', async (t) => {

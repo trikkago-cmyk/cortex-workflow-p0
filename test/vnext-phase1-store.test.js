@@ -100,6 +100,38 @@ test('phase 1 memory model stores sources and backfills checkpoint / brief refer
   assert.equal(reviewed.memory.metadata.review_stage, 'human_confirmed_durable');
 });
 
+test('task brief source_ref can backfill stable thread identity from upstream command', () => {
+  const { store, engine } = createHarnessContext();
+
+  const command = engine.ingestImMessage({
+    projectId: 'PRJ-cortex',
+    text: '继续推进 Cortex 线程身份治理',
+    sessionId: 'thread-source@corp',
+    messageId: 'msg-thread-source-001',
+  }).command;
+
+  const brief = store.createOrGetTaskBrief({
+    projectId: 'PRJ-cortex',
+    title: '继承 command 线程的 brief',
+    why: '避免未来新增 brief 再退回 brief:* 泛化线程。',
+    context: '这里模拟旧数据：brief 创建时还没把 thread_key 写进去，但已经有 source_ref。',
+    what: '验证 backfill 能从 source_ref 找回上游 thread identity。',
+    status: 'draft',
+    source: 'agent_brief',
+    sourceRef: `command:${command.commandId}`,
+    idempotencyKey: 'brief-source-ref-backfill',
+  }).brief;
+
+  assert.equal(brief.threadKey, null);
+
+  const stats = store.backfillThreadIdentityColumns();
+  const briefAfter = store.getTaskBrief(brief.briefId);
+
+  assert.equal(stats.taskBriefs, 1);
+  assert.equal(briefAfter.sourceRef, `command:${command.commandId}`);
+  assert.equal(briefAfter.threadKey, 'session:thread-source@corp');
+});
+
 test('phase 1 inbox model updates source command / decision projections', () => {
   const { store, engine } = createHarnessContext();
 
@@ -141,6 +173,9 @@ test('phase 1 inbox model updates source command / decision projections', () => 
   }).item;
 
   assert.equal(engine.listInbox({ projectId: 'PRJ-cortex' }).items.length, 2);
+  assert.equal(command.threadKey, 'session:your-user@corp');
+  assert.equal(reviewItem.threadKey, 'session:your-user@corp');
+  assert.equal(reviewItem.threadLabel, command.threadLabel);
 
   const commandAfter = store.getCommand(command.commandId);
   assert.equal(commandAfter.inboxItemCount, 1);
@@ -367,4 +402,120 @@ test('server extracts candidate memory from raw dialogue, runs reviewer-agent, a
   assert.equal(accepted.memory.status, 'durable');
   assert.equal(accepted.memory.review_state, 'accepted');
   assert.equal(accepted.memory.human_review.actor, 'reviewer-human');
+});
+
+test('server suggestion accept endpoint projects accepted suggestion into candidate memory', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-suggestion-memory-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-05-10T01:00:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const address = app.server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const suggestionCreate = await fetch(`${baseUrl}/suggestions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_id: 'PRJ-cortex',
+      thread_key: 'notion:page-memory:discussion-memory',
+      thread_label: 'memory reviewer suggestion',
+      source_type: 'notion_comment',
+      source_ref: 'comment-memory-001',
+      document_ref: 'notion://page/page-memory/discussion/discussion-memory/comment/comment-memory-001',
+      proposed_text: '把 reviewer 现场里的 suggestion 直接转成 candidate memory',
+      reason: '用户已经明确这类 suggestion 值得继续沉淀。',
+      owner_agent: 'agent-router',
+    }),
+  }).then((response) => response.json());
+
+  assert.equal(suggestionCreate.ok, true);
+
+  const accepted = await fetch(
+    `${baseUrl}/suggestions/${encodeURIComponent(suggestionCreate.suggestion.suggestion_id)}/accept`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        review_note: '这条 suggestion 已经说明了 reviewer 现场该怎么继续沉淀。',
+        review_actor: 'workspace_memory_reviewer',
+      }),
+    },
+  ).then((response) => response.json());
+
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.suggestion.status, 'accepted');
+  assert.equal(accepted.projections.length, 1);
+
+  const memories = await fetch(`${baseUrl}/memory?project_id=PRJ-cortex`).then((response) => response.json());
+  assert.equal(memories.ok, true);
+  assert.equal(memories.memories.length, 1);
+  assert.equal(memories.memories[0].status, 'candidate');
+  assert.equal(memories.memories[0].review_state, 'pending_accept');
+  assert.match(memories.memories[0].title, /reviewer 现场里的 suggestion|candidate memory/i);
+
+  const memoryDetail = await fetch(`${baseUrl}/memory/${encodeURIComponent(memories.memories[0].memory_id)}`).then((response) =>
+    response.json(),
+  );
+  assert.equal(memoryDetail.ok, true);
+  assert.equal(memoryDetail.sources.length, 1);
+  assert.match(memoryDetail.sources[0].summary, /Reviewer note：这条 suggestion 已经说明了 reviewer 现场该怎么继续沉淀/);
+  assert.equal(memoryDetail.sources[0].evidence.reviewer_note, '这条 suggestion 已经说明了 reviewer 现场该怎么继续沉淀。');
+  assert.equal(memoryDetail.sources[0].evidence.reviewer_actor, 'workspace_memory_reviewer');
+});
+
+test('server suggestion reject endpoint can skip memory projection for reviewer-only dismissal', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-suggestion-reject-skip-memory-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-05-10T01:10:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const address = app.server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const suggestionCreate = await fetch(`${baseUrl}/suggestions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_id: 'PRJ-cortex',
+      thread_key: 'notion:page-memory:discussion-memory',
+      thread_label: 'memory reviewer suggestion reject',
+      source_type: 'notion_comment',
+      source_ref: 'comment-memory-002',
+      document_ref: 'notion://page/page-memory/discussion/discussion-memory/comment/comment-memory-002',
+      proposed_text: '这条 suggestion 现在先不要沉淀成 memory',
+      reason: '只是临时描述，不够稳定。',
+      owner_agent: 'agent-router',
+    }),
+  }).then((response) => response.json());
+
+  assert.equal(suggestionCreate.ok, true);
+
+  const rejected = await fetch(
+    `${baseUrl}/suggestions/${encodeURIComponent(suggestionCreate.suggestion.suggestion_id)}/reject`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rejected_reason: '当前先保留在 suggestion 层，不进入 memory',
+        skip_memory_projection: true,
+      }),
+    },
+  ).then((response) => response.json());
+
+  assert.equal(rejected.ok, true);
+  assert.equal(rejected.suggestion.status, 'rejected');
+  assert.deepEqual(rejected.projections, []);
+
+  const memories = await fetch(`${baseUrl}/memory?project_id=PRJ-cortex`).then((response) => response.json());
+  assert.equal(memories.ok, true);
+  assert.equal(memories.memories.length, 0);
 });

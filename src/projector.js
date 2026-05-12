@@ -1,4 +1,5 @@
 import { proposeMemoryCandidates } from './memory-extractor.js';
+import { parseCommentIntentEventKey } from './comment-intent.js';
 
 function compact(value) {
   return String(value || '')
@@ -27,13 +28,28 @@ export class CortexProjector {
       return null;
     }
 
+    const commentIntent = parseCommentIntentEventKey(command.eventKey);
+    const executionPolicy = commentIntent?.comment_execution_policy || 'enqueue';
+    const intent = commentIntent?.comment_intent || 'continue_task';
+    const riskLevel = executionPolicy === 'enqueue' || executionPolicy === 'log_only' ? 'green' : 'yellow';
+    const actionType = executionPolicy === 'enqueue' || executionPolicy === 'log_only' ? 'respond' : 'review';
+    const titlePrefix =
+      executionPolicy === 'enqueue'
+        ? '评论可执行'
+        : executionPolicy === 'reject'
+          ? '评论已拦截'
+          : executionPolicy === 'log_only'
+            ? '评论已记录'
+          : '评论待分流';
+
     return this.engine.createInboxItem({
       projectId: command.projectId,
       queue: 'triage',
       objectType: 'comment',
-      actionType: 'respond',
-      riskLevel: 'green',
-      title: `评论待处理：${summarize(command.instruction)}`,
+      actionType,
+      riskLevel,
+      status: executionPolicy === 'enqueue' || executionPolicy === 'log_only' ? 'resolved' : 'open',
+      title: `${titlePrefix}：${summarize(command.instruction)}`,
       summary: compact(command.contextQuote) || compact(command.instruction),
       ownerAgent: command.ownerAgent,
       sourceRef: `command:${command.commandId}`,
@@ -44,6 +60,13 @@ export class CortexProjector {
         target_type: command.targetType,
         target_id: command.targetId,
         owner_agent: command.ownerAgent,
+        comment_intent: intent,
+        comment_task_state: commentIntent?.comment_task_state || null,
+        comment_execution_policy: executionPolicy,
+        comment_executable: commentIntent?.comment_executable ?? true,
+        comment_allowed: commentIntent?.comment_allowed ?? true,
+        comment_confidence: commentIntent?.comment_confidence || null,
+        comment_reason: commentIntent?.comment_reason || null,
       },
       idempotencyKey: `projector:inbox:notion_comment:${command.commandId}:triage`,
     });
@@ -218,10 +241,16 @@ export class CortexProjector {
     });
   }
 
-  projectSuggestionOutcome(suggestion) {
+  projectSuggestionOutcome(suggestion, options = {}) {
     if (!suggestion) {
       return [];
     }
+
+    const reviewNote = compact(options.reviewNote);
+    const reviewActor = compact(options.reviewActor);
+    const sourceSummary = reviewNote
+      ? [suggestion.reason, `Reviewer note：${reviewNote}`].filter(Boolean).join('；')
+      : suggestion.reason;
 
     return this.projectMemoryCandidates({
       projectId: suggestion.projectId,
@@ -231,9 +260,12 @@ export class CortexProjector {
       status: suggestion.status,
       proposedText: suggestion.proposedText,
       summary: suggestion.reason,
+      sourceSummary,
       evidence: {
         suggestion_id: suggestion.suggestionId,
         selected_text: suggestion.selectedText,
+        reviewer_note: reviewNote || null,
+        reviewer_actor: reviewActor || null,
       },
       createdAt: suggestion.updatedAt || suggestion.createdAt,
     });

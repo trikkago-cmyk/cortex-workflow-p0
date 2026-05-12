@@ -59,6 +59,25 @@ export function summarizeRuntimeSamples(samples = []) {
   };
 }
 
+function processCoveredByRuntime(processState, { healthOk = false, launchdLoaded = false } = {}) {
+  return processState?.name === 'cortex-server' && processState.running !== true && healthOk && launchdLoaded;
+}
+
+function applyRuntimeProcessCoverage(processes = [], context = {}) {
+  return normalizeArray(processes).map((processState) => {
+    if (!processCoveredByRuntime(processState, context)) {
+      return processState;
+    }
+
+    return {
+      ...processState,
+      running: true,
+      covered_by: 'launchd_server_direct',
+      coveredBy: 'launchd_server_direct',
+    };
+  });
+}
+
 function messageCount(payload, fallbackKeys = []) {
   if (!payload || typeof payload !== 'object') {
     return 0;
@@ -78,8 +97,6 @@ function messageCount(payload, fallbackKeys = []) {
 }
 
 export function buildRuntimeReadinessReport(snapshot = {}) {
-  const processSummary = summarizeManagedProcesses(snapshot.automation?.processes || []);
-  const sampleSummary = summarizeRuntimeSamples(snapshot.samples || []);
   const expectLaunchd = Boolean(snapshot.expectLaunchd);
   const healthOk = snapshot.health?.ok === true;
   const redSmokeRequested = snapshot.redSmokeRequested === true;
@@ -91,6 +108,26 @@ export function buildRuntimeReadinessReport(snapshot = {}) {
   const openRedDecisionsCount = messageCount(snapshot.openRedDecisions, ['decisions']);
   const launchdInstalled = snapshot.launchd?.installed === true;
   const launchdLoaded = snapshot.launchd?.loaded === true;
+  const rawProcesses = normalizeArray(snapshot.automation?.processes || []);
+  const coveredManagedProcesses = rawProcesses
+    .filter((processState) => processCoveredByRuntime(processState, { healthOk, launchdLoaded }))
+    .map((processState) => processState.name)
+    .filter(Boolean);
+  const processSummary = summarizeManagedProcesses(
+    applyRuntimeProcessCoverage(rawProcesses, { healthOk, launchdLoaded }),
+  );
+  const sampleSummary = summarizeRuntimeSamples(
+    normalizeArray(snapshot.samples || []).map((sample) => ({
+      ...sample,
+      automation: {
+        ...(sample?.automation || {}),
+        processes: applyRuntimeProcessCoverage(sample?.automation?.processes || [], {
+          healthOk: sample?.healthOk === true,
+          launchdLoaded,
+        }),
+      },
+    })),
+  );
 
   const checks = [];
   const blocking = [];
@@ -229,6 +266,8 @@ export function buildRuntimeReadinessReport(snapshot = {}) {
       managed_process_total: processSummary.totalCount,
       managed_process_running: processSummary.runningCount,
       managed_process_stopped: processSummary.stoppedCount,
+      covered_managed_processes: coveredManagedProcesses,
+      coveredManagedProcesses,
       failed_commands: failedCommandsCount,
       failed_outbox: failedOutboxCount,
       pending_outbox: pendingOutboxCount,

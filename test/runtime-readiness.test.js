@@ -94,6 +94,43 @@ test('buildRuntimeReadinessReport returns ready when core checks pass', () => {
   assert.equal(report.summary.latest_checkpoint_title, '长稳验证完成');
 });
 
+test('buildRuntimeReadinessReport accepts launchd-covered cortex server process', () => {
+  const report = buildRuntimeReadinessReport({
+    expectLaunchd: true,
+    automation: {
+      processes: [
+        { name: 'cortex-server', running: false },
+        { name: 'cortex-custom-agent-mcp', running: true },
+      ],
+    },
+    health: { ok: true },
+    launchd: {
+      installed: true,
+      loaded: true,
+    },
+    failedCommands: { commands: [] },
+    failedOutbox: { message_count: 0, messages: [] },
+    pendingOutbox: { pending_count: 0, pending: [] },
+    recentReceipts: { receipts: [{ receipt_id: 'R-1' }] },
+    openRedDecisions: { decisions: [] },
+    samples: [
+      {
+        healthOk: true,
+        automation: {
+          processes: [{ name: 'cortex-server', running: false }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(report.ok, true);
+  assert.equal(report.status, 'ready');
+  assert.deepEqual(report.blocking, []);
+  assert.deepEqual(report.summary.covered_managed_processes, ['cortex-server']);
+  assert.equal(report.processSummary.stoppedCount, 0);
+  assert.equal(report.sampleSummary.processFailureCount, 0);
+});
+
 test('buildRuntimeReadinessReport marks blocking and warnings separately', () => {
   const report = buildRuntimeReadinessReport({
     expectLaunchd: true,

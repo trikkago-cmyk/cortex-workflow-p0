@@ -101,7 +101,7 @@ test('dashboard data aggregates current work, waiting items, completions, and me
     project_id: 'PRJ-cortex',
     queue: 'review',
     object_type: 'memory',
-    action_type: 'human_review',
+    action_type: 'review',
     risk_level: 'yellow',
     title: '确认这条 dashboard 设计是否进入 durable memory',
     summary: '等待你最终确认是否把“前端任务看板”纳入长期默认协作机制。',

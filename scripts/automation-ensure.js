@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import {
+  readAutomationEnsurePause,
   defaultRuntimeDir,
   listManagedProcessNames,
   listManagedStackWatchFiles,
@@ -15,6 +16,24 @@ loadProjectEnv(process.cwd(), {
 const cwd = process.cwd();
 const runtimeDir = defaultRuntimeDir(cwd);
 const cortexBaseUrl = process.env.CORTEX_BASE_URL || 'http://127.0.0.1:19100';
+const ensurePause = readAutomationEnsurePause({ runtimeDir });
+
+if (ensurePause.active) {
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        action: 'paused',
+        cortexBaseUrl,
+        runtimeDir,
+        pause: ensurePause.payload,
+      },
+      null,
+      2,
+    ),
+  );
+  process.exit(0);
+}
 
 function readPid(name) {
   const file = pidFilePath(runtimeDir, name);
@@ -72,11 +91,14 @@ async function isCortexHealthy() {
   }
 }
 
-function runNpmScript(scriptName) {
+function runNpmScript(scriptName, { envOverrides = {} } = {}) {
   const result = spawnSync('npm', ['run', scriptName], {
     cwd,
     encoding: 'utf8',
-    env: process.env,
+    env: {
+      ...process.env,
+      ...envOverrides,
+    },
   });
 
   if (result.status !== 0) {
@@ -122,19 +144,43 @@ if (staleProcesses.length > 0) {
         pidFileMtimeMs: processState.pidFileMtimeMs,
       })),
     },
-    stop: runNpmScript('automation:stop'),
-    start: runNpmScript('automation:start'),
+    stop: runNpmScript('automation:stop', {
+      envOverrides: {
+        AUTOMATION_STOP_REASON: 'self_heal_restart',
+        AUTOMATION_STOP_SOURCE: 'scripts/automation-ensure.js',
+        AUTOMATION_STOP_PAUSE_TTL_MS: '15000',
+      },
+    }),
+    start: runNpmScript('automation:start', {
+      envOverrides: {
+        AUTOMATION_START_SOURCE: 'automation_ensure',
+      },
+    }),
   };
 } else if (!healthOk && before.some((processState) => processState.running)) {
   action = 'restart_unhealthy_stack';
   details = {
-    stop: runNpmScript('automation:stop'),
-    start: runNpmScript('automation:start'),
+    stop: runNpmScript('automation:stop', {
+      envOverrides: {
+        AUTOMATION_STOP_REASON: 'self_heal_restart',
+        AUTOMATION_STOP_SOURCE: 'scripts/automation-ensure.js',
+        AUTOMATION_STOP_PAUSE_TTL_MS: '15000',
+      },
+    }),
+    start: runNpmScript('automation:start', {
+      envOverrides: {
+        AUTOMATION_START_SOURCE: 'automation_ensure',
+      },
+    }),
   };
 } else if (!healthOk || hasStopped) {
   action = 'start_missing_processes';
   details = {
-    start: runNpmScript('automation:start'),
+    start: runNpmScript('automation:start', {
+      envOverrides: {
+        AUTOMATION_START_SOURCE: 'automation_ensure',
+      },
+    }),
   };
 }
 

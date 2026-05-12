@@ -67,7 +67,7 @@ test('notion custom agent webhook ingests agent-triggered comments without polli
     comment_id: 'comment-001',
     body: '@cortex 请把这条 review 推进到下一步',
     owner_agent: 'agent-router',
-    invoked_agent: 'Cortex Router',
+    invoked_agent: 'Cortex',
     source_url: 'notion://page/page-001/discussion/discussion-001/comment/comment-001',
   });
 
@@ -100,7 +100,7 @@ test('notion custom agent webhook upgrades red-risk discussions into decision re
     comment_id: 'comment-002',
     body: '直接覆盖当前公开 README 结构。',
     owner_agent: 'agent-router',
-    invoked_agent: 'Cortex Router',
+    invoked_agent: 'Cortex',
     signal_level: 'red',
     decision_context: {
       question: '是否直接覆盖当前公开 README 结构？',
@@ -190,12 +190,12 @@ test('notion custom agent webhook ignores self-authored agent comments to avoid 
     page_id: 'page-004',
     discussion_id: 'discussion-004',
     comment_id: 'comment-004',
-    body: '这是 Cortex Router 刚刚自己回帖的内容。',
-    invoked_agent: 'Cortex Router',
+    body: '这是 Cortex 刚刚自己回帖的内容。',
+    invoked_agent: 'Cortex',
     created_by: {
       id: 'notion-user-router-001',
       type: 'bot',
-      name: 'Cortex Router',
+      name: 'Cortex',
     },
     invoked_agent_actor_id: 'notion-user-router-001',
     source_url: 'notion://page/page-004/discussion/discussion-004/comment/comment-004',
@@ -329,10 +329,147 @@ test('notion custom agent webhook accepts project child pages when ancestry incl
 
   assert.equal(response.status, 200);
   assert.equal(response.body.ok, true);
-  assert.equal(response.body.workflow_path, 'command');
+  assert.equal(response.body.workflow_path, 'comment_triage');
+  assert.equal(response.body.comment_intent, 'needs_clarification');
   assert.equal(response.body.skipped || false, false);
 
   const commands = await getJson(baseUrl, '/commands?project_id=PRJ-cortex');
   assert.equal(commands.status, 200);
   assert.equal(commands.body.commands.length, 1);
+  assert.equal(commands.body.commands[0].status, 'archived');
+});
+
+test('notion custom agent dispatches explicit approve command to decision and memory projection', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-notion-custom-agent-approve-decision-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-24T09:00:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  const decisionCreate = await postJson(baseUrl, '/decisions', {
+    project_id: 'PRJ-cortex',
+    signal_level: 'yellow',
+    question: '是否把 Notion 评论结构化命令作为主协作入口？',
+    recommendation: '批准后进入固定协作规则，避免纯自然语言误判。',
+    impact_scope: 'cross_module',
+    idempotency_key: 'structured-command-approval-decision',
+  });
+  assert.equal(decisionCreate.status, 200);
+
+  const approve = await postJson(baseUrl, '/webhook/notion-custom-agent', {
+    project_id: 'PRJ-cortex',
+    page_id: 'page-structured-approve',
+    discussion_id: 'discussion-structured-approve',
+    comment_id: 'comment-structured-approve',
+    body: '批准这条结构化协作规则。',
+    actor_name: 'human-reviewer',
+    command_intent: {
+      action: 'approve',
+      target_type: 'decision',
+      target_id: decisionCreate.body.decision.decision_id,
+      note: '批准，后续 Notion 评论必须优先走结构化意图。',
+    },
+  });
+
+  assert.equal(approve.status, 200);
+  assert.equal(approve.body.workflow_path, 'structured_command');
+  assert.equal(approve.body.structured_command.action, 'approve');
+  assert.equal(approve.body.decision.status, 'approved');
+  assert.equal(approve.body.decision.decided_by, 'human-reviewer');
+  assert.equal(approve.body.decision_id, decisionCreate.body.decision.decision_id);
+  assert.equal(approve.body.memory_projections.length, 1);
+  assert.equal(approve.body.memory_projections[0].memory.status, 'candidate');
+
+  const memory = await getJson(baseUrl, '/memory?project_id=PRJ-cortex');
+  assert.equal(memory.status, 200);
+  assert.equal(memory.body.memories.length, 1);
+  assert.match(memory.body.memories[0].summary, /Notion 评论结构化命令/);
+});
+
+test('notion custom agent dispatches explicit memory approve to durable memory', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-notion-custom-agent-memory-approve-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-24T09:10:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  const candidate = await postJson(baseUrl, '/memory', {
+    project_id: 'PRJ-cortex',
+    layer: 'base_memory',
+    type: 'preference',
+    title: 'Notion 评论必须显式写命令意图',
+    summary: '用户偏好：Notion 评论异步协作时，approve/reject/request_changes/block/continue 必须是结构化意图。',
+    confidence: 'high',
+    sources: [
+      {
+        source_type: 'comment',
+        source_ref: 'notion-comment:structured-memory-001',
+        source_url: 'notion://page/page-memory/discussion/discussion-memory/comment/comment-memory',
+        summary: '来自 Notion 评论闭环需求。',
+      },
+    ],
+  });
+  assert.equal(candidate.status, 200);
+  assert.equal(candidate.body.memory.status, 'candidate');
+
+  const approve = await postJson(baseUrl, '/webhook/notion-custom-agent', {
+    project_id: 'PRJ-cortex',
+    page_id: 'page-memory',
+    discussion_id: 'discussion-memory',
+    comment_id: 'comment-memory-approve',
+    body: `[approve: memory:${candidate.body.memory.memory_id}] 确认进入长期协作偏好。`,
+    actor_name: 'human-reviewer',
+  });
+
+  assert.equal(approve.status, 200);
+  assert.equal(approve.body.workflow_path, 'structured_command');
+  assert.equal(approve.body.structured_command.action, 'approve');
+  assert.equal(approve.body.memory_id, candidate.body.memory.memory_id);
+  assert.equal(approve.body.memory.status, 'durable');
+  assert.equal(approve.body.memory.review_state, 'accepted');
+  assert.equal(approve.body.memory.human_review.actor, 'human-reviewer');
+});
+
+test('notion custom agent dispatches explicit block without target into red decision request', async (t) => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'cortex-notion-custom-agent-block-'));
+  const app = createCortexServer({
+    dbPath: join(dbDir, 'cortex.db'),
+    clock: () => new Date('2026-04-24T09:20:00.000Z'),
+  });
+
+  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+
+  const block = await postJson(baseUrl, '/webhook/notion-custom-agent', {
+    project_id: 'PRJ-cortex',
+    page_id: 'page-block',
+    discussion_id: 'discussion-block',
+    comment_id: 'comment-block',
+    body: '[block] 外部 agent 回执缺少 checkpoint，先不要继续扩散执行。',
+    owner_agent: 'agent-router',
+  });
+
+  assert.equal(block.status, 200);
+  assert.equal(block.body.workflow_path, 'decision_request');
+  assert.equal(block.body.signal_level, 'red');
+  assert.match(block.body.decision_id, /^DR-/);
+  assert.equal(block.body.decision.signal_level, 'red');
+  assert.equal(block.body.command_id, null);
+
+  const decisions = await getJson(baseUrl, '/decisions?project_id=PRJ-cortex&signal_level=red');
+  assert.equal(decisions.status, 200);
+  assert.equal(decisions.body.decisions.length, 1);
+  assert.equal(decisions.body.decisions[0].decision_id, block.body.decision_id);
 });

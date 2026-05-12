@@ -314,7 +314,7 @@ export function inferRouterTarget(command = {}) {
   if (/(评测|质量|回归|异常|漂移|eval|quality|监控|归因|指标)/i.test(haystack)) {
     return 'agent-evaluator';
   }
-  if (/(notion|评论|同步|review|memory|工作台|执行文档|项目索引|目录)/i.test(haystack)) {
+  if (/(notion|评论|同步|review|memory|工作台|执行文档|项目索引|目录|执行.*文档|(?:动态|进展|状态).*文档)/i.test(haystack)) {
     return 'agent-notion-worker';
   }
   return 'agent-pm';
@@ -401,6 +401,7 @@ export function createPmHandler(options = {}) {
         status: 'draft',
         owner_agent: agentName,
         source: command.source,
+        source_ref: `command:${command.command_id || command.commandId}`,
         source_url: command.source_url || command.sourceUrl,
         target_type: command.target_type || command.targetType,
         target_id: command.target_id || command.targetId,

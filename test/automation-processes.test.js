@@ -5,11 +5,16 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createStore } from '../src/store.js';
 import {
+  clearAutomationEnsurePause,
+  automationEnsurePauseFilePath,
   customAgentMcpEnabled,
   defaultRuntimeDir,
   listManagedProcessNames,
   listManagedStackWatchFiles,
+  notionCommentPollerShouldRun,
   panghuPollerShouldRun,
+  readAutomationEnsurePause,
+  writeAutomationEnsurePause,
 } from '../src/automation-processes.js';
 import { notionCollaborationMode } from '../src/notion-collaboration-mode.js';
 
@@ -146,7 +151,83 @@ test('listManagedStackWatchFiles includes runtime code and config, but not execu
   assert.doesNotMatch(files.join('\n'), /docs\/projects\/execution\.md/);
 });
 
-test('notion collaboration is fixed to custom_agent and never enables comment polling', () => {
+test('notion collaboration is fixed to custom_agent while token poller is an explicit bridge', () => {
   assert.equal(notionCollaborationMode({}), 'custom_agent');
   assert.equal(notionCollaborationMode({ NOTION_COLLAB_MODE: 'legacy_polling' }), 'custom_agent');
+  assert.equal(notionCommentPollerShouldRun({ NOTION_API_KEY: 'secret_test' }, { cwd: mkdtempSync(join(tmpdir(), 'cortex-no-pages-')) }), false);
+
+  const cwd = mkdtempSync(join(tmpdir(), 'cortex-token-poller-'));
+  mkdirSync(join(cwd, 'db'), { recursive: true });
+  const store = createStore({
+    dbPath: join(cwd, 'db', 'cortex.db'),
+  });
+  store.ensureProject({
+    projectId: 'PRJ-cortex',
+    name: 'Cortex',
+    notionScanPageId: 'page-scan-001',
+  });
+  store.close();
+
+  assert.equal(
+    notionCommentPollerShouldRun(
+      {
+        NOTION_API_KEY: 'secret_test',
+      },
+      {
+        cwd,
+        dbPath: join(cwd, 'db', 'cortex.db'),
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    notionCommentPollerShouldRun(
+      {
+        NOTION_API_KEY: 'secret_test',
+        NOTION_COMMENT_POLLER_ENABLE: '0',
+      },
+      {
+        cwd,
+        dbPath: join(cwd, 'db', 'cortex.db'),
+      },
+    ),
+    false,
+  );
+});
+
+test('automation ensure pause can be written, read, expired, and cleared', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'cortex-automation-pause-'));
+  const runtimeDir = defaultRuntimeDir(cwd);
+  mkdirSync(runtimeDir, { recursive: true });
+
+  const written = writeAutomationEnsurePause({
+    runtimeDir,
+    reason: 'manual_stop',
+    ttlMs: 2_000,
+    now: 1_000,
+    metadata: {
+      source: 'test',
+    },
+  });
+
+  assert.equal(written.filePath, automationEnsurePauseFilePath(runtimeDir));
+  assert.equal(written.payload.reason, 'manual_stop');
+  assert.equal(written.payload.source, 'test');
+
+  const activePause = readAutomationEnsurePause({
+    runtimeDir,
+    now: 2_500,
+  });
+  assert.equal(activePause.active, true);
+  assert.equal(activePause.payload.reason, 'manual_stop');
+
+  const expiredPause = readAutomationEnsurePause({
+    runtimeDir,
+    now: 3_500,
+  });
+  assert.equal(expiredPause.active, false);
+  assert.equal(expiredPause.expired, true);
+
+  const cleared = clearAutomationEnsurePause(runtimeDir);
+  assert.equal(cleared, false);
 });

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { defaultAgentRegistryFile, deriveExecutorPoolFromAgentRegistry } from './agent-registry.js';
 import { loadExecutorPoolConfig } from './executor-pool.js';
@@ -6,9 +6,112 @@ import { resolvePanghuRuntimeConfig } from './panghu-runtime.js';
 import { loadProjectEnv } from './project-env.js';
 import { isLocalNotificationChannel } from './local-notification.js';
 import { createStore } from './store.js';
+import { notionCommentPollerEnabled, resolveNotionCommentPollTargets } from './notion-comment-poller.js';
 
 export function defaultRuntimeDir(cwd = process.cwd()) {
   return resolve(cwd, 'tmp', 'automation-runtime');
+}
+
+export function automationEnsurePauseFilePath(runtimeDir) {
+  return join(runtimeDir, 'automation-ensure.pause.json');
+}
+
+function normalizePauseTtlMs(value, fallback = 45_000) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+  return Math.max(1_000, Math.round(numericValue));
+}
+
+export function writeAutomationEnsurePause({
+  runtimeDir = defaultRuntimeDir(),
+  reason = 'manual_stop',
+  ttlMs = 45_000,
+  now = Date.now(),
+  metadata = {},
+} = {}) {
+  mkdirSync(runtimeDir, { recursive: true });
+
+  const normalizedNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const normalizedTtlMs = normalizePauseTtlMs(ttlMs);
+  const pauseUntilMs = normalizedNow + normalizedTtlMs;
+  const filePath = automationEnsurePauseFilePath(runtimeDir);
+  const payload = {
+    reason: String(reason || 'manual_stop'),
+    ttl_ms: normalizedTtlMs,
+    paused_at: new Date(normalizedNow).toISOString(),
+    pause_until: new Date(pauseUntilMs).toISOString(),
+    ...metadata,
+  };
+
+  writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  return {
+    filePath,
+    payload: {
+      ...payload,
+      pauseUntilMs,
+    },
+  };
+}
+
+export function clearAutomationEnsurePause(runtimeDir = defaultRuntimeDir()) {
+  const filePath = automationEnsurePauseFilePath(runtimeDir);
+  if (existsSync(filePath)) {
+    rmSync(filePath, { force: true });
+    return true;
+  }
+  return false;
+}
+
+export function readAutomationEnsurePause({
+  runtimeDir = defaultRuntimeDir(),
+  now = Date.now(),
+  autoCleanupExpired = true,
+} = {}) {
+  const filePath = automationEnsurePauseFilePath(runtimeDir);
+  if (!existsSync(filePath)) {
+    return {
+      filePath,
+      active: false,
+      payload: null,
+      expired: false,
+    };
+  }
+
+  try {
+    const payload = JSON.parse(readFileSync(filePath, 'utf8'));
+    const pauseUntilMs = Date.parse(String(payload?.pause_until || ''));
+    const normalizedNow = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const active = Number.isFinite(pauseUntilMs) && pauseUntilMs > normalizedNow;
+    const expired = Number.isFinite(pauseUntilMs) && pauseUntilMs <= normalizedNow;
+
+    if (expired && autoCleanupExpired) {
+      rmSync(filePath, { force: true });
+    }
+
+    return {
+      filePath,
+      active,
+      expired,
+      payload: {
+        ...payload,
+        pauseUntilMs: Number.isFinite(pauseUntilMs) ? pauseUntilMs : null,
+      },
+    };
+  } catch (error) {
+    if (autoCleanupExpired) {
+      rmSync(filePath, { force: true });
+    }
+
+    return {
+      filePath,
+      active: false,
+      expired: false,
+      payload: null,
+      error: error.message,
+    };
+  }
 }
 
 export function panghuPollerEnabled(env = process.env) {
@@ -74,6 +177,26 @@ export function localNotificationPollerEnabled(env = process.env, options = {}) 
   }
 
   return anyProjectUsesLocalNotification(options);
+}
+
+export function notionCommentPollerShouldRun(env = process.env, options = {}) {
+  if (!notionCommentPollerEnabled(env)) {
+    return false;
+  }
+
+  if (!String(env.NOTION_API_KEY || '').trim()) {
+    return false;
+  }
+
+  try {
+    return resolveNotionCommentPollTargets({
+      cwd: options.cwd || process.cwd(),
+      env,
+      dbPath: options.dbPath,
+    }).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeProjectId(value, fallback = 'PRJ-cortex') {
@@ -170,6 +293,9 @@ export function listManagedProcessNames({ cwd = process.cwd(), runtimeDir = defa
   }
   if (localNotificationPollerEnabled(process.env, { cwd })) {
     names.add('local-notifier');
+  }
+  if (notionCommentPollerShouldRun(process.env, { cwd })) {
+    names.add('notion-comment-poller');
   }
 
   for (const name of namesFromConfiguredWorkers(cwd)) {

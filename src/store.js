@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
+import { deriveThreadIdentity, threadSpecificity } from './thread-identity.js';
 
 const DEFAULT_DB_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '../db/cortex.db');
 
@@ -16,6 +17,12 @@ function unixSeconds(clock) {
 
 function hashValue(value) {
   return createHash('sha1').update(String(value || ''), 'utf8').digest('hex').slice(0, 12);
+}
+
+function compact(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function dateBucket(isoString) {
@@ -55,6 +62,61 @@ function refToId(sourceRef, prefix, fallbackPrefix) {
   return null;
 }
 
+function normalizeThreadIdentity(identity) {
+  if (!identity?.key) {
+    return null;
+  }
+
+  const key = compact(identity.key);
+  if (!key) {
+    return null;
+  }
+
+  return {
+    key,
+    label: compact(identity.label) || key,
+    concrete: Boolean(identity.concrete),
+  };
+}
+
+function preferThreadIdentity(currentIdentity, candidateIdentity) {
+  const current = normalizeThreadIdentity(currentIdentity);
+  const candidate = normalizeThreadIdentity(candidateIdentity);
+
+  if (!current) {
+    return candidate;
+  }
+  if (!candidate) {
+    return current;
+  }
+
+  const currentSpecificity = threadSpecificity(current.key);
+  const candidateSpecificity = threadSpecificity(candidate.key);
+
+  if (candidate.concrete && !current.concrete) {
+    return {
+      ...candidate,
+      label: candidate.label || current.label,
+    };
+  }
+
+  if (candidateSpecificity > currentSpecificity) {
+    return {
+      ...candidate,
+      label: candidate.label || current.label,
+    };
+  }
+
+  if (candidate.key === current.key && !compact(current.label) && compact(candidate.label)) {
+    return {
+      ...current,
+      label: candidate.label,
+    };
+  }
+
+  return current;
+}
+
 export function mapCommandRow(row) {
   if (!row) {
     return undefined;
@@ -64,6 +126,8 @@ export function mapCommandRow(row) {
     commandId: row.command_id,
     parentCommandId: row.parent_command_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     channel: row.channel,
     targetType: row.target_type,
     targetId: row.target_id,
@@ -85,6 +149,7 @@ export function mapCommandRow(row) {
     inboxItemCount: row.inbox_item_count ?? 0,
     lastInboxItemAt: row.last_inbox_item_at ?? null,
     source: row.source,
+    sourceRef: row.source_ref,
     sourceUrl: row.source_url,
     idempotencyKey: row.idempotency_key,
     createdAt: row.created_at,
@@ -100,6 +165,8 @@ export function mapDecisionRow(row) {
   return {
     decisionId: row.decision_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     signalLevel: row.signal_level,
     blockingLevel: row.blocking_level,
     status: row.status,
@@ -140,6 +207,8 @@ export function mapTaskBriefRow(row) {
   return {
     briefId: row.brief_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     title: row.title,
     why: row.why,
     context: row.context,
@@ -147,6 +216,7 @@ export function mapTaskBriefRow(row) {
     status: row.status,
     ownerAgent: row.owner_agent,
     source: row.source,
+    sourceRef: row.source_ref,
     sourceUrl: row.source_url,
     channelSessionId: row.channel_session_id,
     targetType: row.target_type,
@@ -212,6 +282,8 @@ export function mapRunRow(row) {
   return {
     runId: row.run_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     briefId: row.brief_id,
     commandId: row.command_id,
     decisionId: row.decision_id,
@@ -240,6 +312,8 @@ export function mapCheckpointRow(row) {
   return {
     checkpointId: row.checkpoint_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     runId: row.run_id,
     briefId: row.brief_id,
     commandId: row.command_id,
@@ -271,6 +345,8 @@ export function mapReceiptRow(row) {
     receiptId: row.receipt_id,
     commandId: row.command_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     sessionId: row.session_id,
     status: row.status,
     receiptType: row.receipt_type,
@@ -339,6 +415,8 @@ export function mapInboxRow(row) {
   return {
     itemId: row.item_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     queue: row.queue,
     objectType: row.object_type,
     actionType: row.action_type,
@@ -366,6 +444,8 @@ export function mapSuggestionRow(row) {
   return {
     suggestionId: row.suggestion_id,
     projectId: row.project_id,
+    threadKey: row.thread_key,
+    threadLabel: row.thread_label,
     sourceType: row.source_type,
     sourceRef: row.source_ref,
     documentRef: row.document_ref,
@@ -388,6 +468,7 @@ export class CortexStore {
   constructor(options = {}) {
     this.clock = options.clock || (() => new Date());
     this.dbPath = options.dbPath || DEFAULT_DB_PATH;
+    this.threadIdentityBackfillStats = null;
 
     mkdirSync(dirname(this.dbPath), { recursive: true });
     this.db = new DatabaseSync(this.dbPath);
@@ -451,6 +532,8 @@ export class CortexStore {
       CREATE TABLE IF NOT EXISTS decision_requests (
         decision_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
+        thread_key TEXT,
+        thread_label TEXT,
         signal_level TEXT NOT NULL,
         blocking_level TEXT,
         status TEXT NOT NULL,
@@ -486,6 +569,8 @@ export class CortexStore {
       CREATE TABLE IF NOT EXISTS task_briefs (
         brief_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
+        thread_key TEXT,
+        thread_label TEXT,
         title TEXT NOT NULL,
         why TEXT NOT NULL,
         context TEXT NOT NULL,
@@ -493,6 +578,7 @@ export class CortexStore {
         status TEXT NOT NULL,
         owner_agent TEXT,
         source TEXT,
+        source_ref TEXT,
         source_url TEXT,
         channel_session_id TEXT,
         target_type TEXT,
@@ -510,6 +596,8 @@ export class CortexStore {
       CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
+        thread_key TEXT,
+        thread_label TEXT,
         brief_id TEXT,
         command_id TEXT,
         decision_id TEXT,
@@ -534,6 +622,8 @@ export class CortexStore {
       CREATE TABLE IF NOT EXISTS checkpoints (
         checkpoint_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
+        thread_key TEXT,
+        thread_label TEXT,
         run_id TEXT,
         brief_id TEXT,
         command_id TEXT,
@@ -561,6 +651,8 @@ export class CortexStore {
         command_id TEXT PRIMARY KEY,
         parent_command_id TEXT,
         project_id TEXT NOT NULL,
+        thread_key TEXT,
+        thread_label TEXT,
         channel TEXT NOT NULL,
         target_type TEXT,
         target_id TEXT,
@@ -608,6 +700,8 @@ export class CortexStore {
         receipt_id TEXT PRIMARY KEY,
         command_id TEXT NOT NULL,
         project_id TEXT NOT NULL,
+        thread_key TEXT,
+        thread_label TEXT,
         session_id TEXT,
         status TEXT NOT NULL CHECK(status IN ('delivered', 'completed', 'failed', 'acknowledged', 'read')),
         receipt_type TEXT NOT NULL CHECK(receipt_type IN ('result', 'status_update', 'alert', 'heartbeat')),
@@ -675,6 +769,8 @@ export class CortexStore {
         owner_agent TEXT,
         source_ref TEXT,
         source_url TEXT,
+        thread_key TEXT,
+        thread_label TEXT,
         assigned_to TEXT,
         payload_json TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
@@ -688,6 +784,8 @@ export class CortexStore {
       CREATE TABLE IF NOT EXISTS suggestions (
         suggestion_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
+        thread_key TEXT,
+        thread_label TEXT,
         source_type TEXT NOT NULL,
         source_ref TEXT,
         document_ref TEXT,
@@ -756,6 +854,14 @@ export class CortexStore {
     const commandColumns = this.db.prepare(`PRAGMA table_info('commands')`).all();
     const requiredCommandColumns = [
       {
+        name: 'thread_key',
+        ddl: `ALTER TABLE commands ADD COLUMN thread_key TEXT;`,
+      },
+      {
+        name: 'thread_label',
+        ddl: `ALTER TABLE commands ADD COLUMN thread_label TEXT;`,
+      },
+      {
         name: 'parent_command_id',
         ddl: `ALTER TABLE commands ADD COLUMN parent_command_id TEXT;`,
       },
@@ -803,6 +909,8 @@ export class CortexStore {
 
     const decisionColumns = this.db.prepare(`PRAGMA table_info('decision_requests')`).all();
     const requiredDecisionColumns = [
+      ['thread_key', `ALTER TABLE decision_requests ADD COLUMN thread_key TEXT;`],
+      ['thread_label', `ALTER TABLE decision_requests ADD COLUMN thread_label TEXT;`],
       ['context', `ALTER TABLE decision_requests ADD COLUMN context TEXT;`],
       ['recommended_option', `ALTER TABLE decision_requests ADD COLUMN recommended_option TEXT;`],
       ['evidence_refs_json', `ALTER TABLE decision_requests ADD COLUMN evidence_refs_json TEXT NOT NULL DEFAULT '[]';`],
@@ -821,14 +929,457 @@ export class CortexStore {
     }
 
     const taskBriefColumns = this.db.prepare(`PRAGMA table_info('task_briefs')`).all();
+    if (!taskBriefColumns.some((column) => column.name === 'thread_key')) {
+      this.db.exec(`ALTER TABLE task_briefs ADD COLUMN thread_key TEXT;`);
+    }
+    if (!taskBriefColumns.some((column) => column.name === 'thread_label')) {
+      this.db.exec(`ALTER TABLE task_briefs ADD COLUMN thread_label TEXT;`);
+    }
+    if (!taskBriefColumns.some((column) => column.name === 'source_ref')) {
+      this.db.exec(`ALTER TABLE task_briefs ADD COLUMN source_ref TEXT;`);
+    }
     if (!taskBriefColumns.some((column) => column.name === 'memory_context_refs')) {
       this.db.exec(`ALTER TABLE task_briefs ADD COLUMN memory_context_refs TEXT NOT NULL DEFAULT '[]';`);
     }
 
+    const runColumns = this.db.prepare(`PRAGMA table_info('runs')`).all();
+    if (!runColumns.some((column) => column.name === 'thread_key')) {
+      this.db.exec(`ALTER TABLE runs ADD COLUMN thread_key TEXT;`);
+    }
+    if (!runColumns.some((column) => column.name === 'thread_label')) {
+      this.db.exec(`ALTER TABLE runs ADD COLUMN thread_label TEXT;`);
+    }
+
     const checkpointColumns = this.db.prepare(`PRAGMA table_info('checkpoints')`).all();
+    if (!checkpointColumns.some((column) => column.name === 'thread_key')) {
+      this.db.exec(`ALTER TABLE checkpoints ADD COLUMN thread_key TEXT;`);
+    }
+    if (!checkpointColumns.some((column) => column.name === 'thread_label')) {
+      this.db.exec(`ALTER TABLE checkpoints ADD COLUMN thread_label TEXT;`);
+    }
     if (!checkpointColumns.some((column) => column.name === 'memory_candidate_count')) {
       this.db.exec(`ALTER TABLE checkpoints ADD COLUMN memory_candidate_count INTEGER NOT NULL DEFAULT 0;`);
     }
+
+    const receiptColumns = this.db.prepare(`PRAGMA table_info('agent_receipts')`).all();
+    if (!receiptColumns.some((column) => column.name === 'thread_key')) {
+      this.db.exec(`ALTER TABLE agent_receipts ADD COLUMN thread_key TEXT;`);
+    }
+    if (!receiptColumns.some((column) => column.name === 'thread_label')) {
+      this.db.exec(`ALTER TABLE agent_receipts ADD COLUMN thread_label TEXT;`);
+    }
+
+    const inboxColumns = this.db.prepare(`PRAGMA table_info('inbox_items')`).all();
+    if (!inboxColumns.some((column) => column.name === 'thread_key')) {
+      this.db.exec(`ALTER TABLE inbox_items ADD COLUMN thread_key TEXT;`);
+    }
+    if (!inboxColumns.some((column) => column.name === 'thread_label')) {
+      this.db.exec(`ALTER TABLE inbox_items ADD COLUMN thread_label TEXT;`);
+    }
+
+    const suggestionColumns = this.db.prepare(`PRAGMA table_info('suggestions')`).all();
+    if (!suggestionColumns.some((column) => column.name === 'thread_key')) {
+      this.db.exec(`ALTER TABLE suggestions ADD COLUMN thread_key TEXT;`);
+    }
+    if (!suggestionColumns.some((column) => column.name === 'thread_label')) {
+      this.db.exec(`ALTER TABLE suggestions ADD COLUMN thread_label TEXT;`);
+    }
+
+    this.threadIdentityBackfillStats = this.backfillThreadIdentityColumns();
+  }
+
+  backfillThreadIdentityColumns() {
+    const stats = {
+      commands: 0,
+      taskBriefs: 0,
+      decisionRequests: 0,
+      runs: 0,
+      checkpoints: 0,
+      receipts: 0,
+      inboxItems: 0,
+      suggestions: 0,
+      total: 0,
+    };
+
+    const updateThreadIdentity = (tableName, idColumn, idValue, record, identity) => {
+      const next = normalizeThreadIdentity(identity);
+      if (!next) {
+        return false;
+      }
+
+      const currentKey = compact(record.threadKey || record.thread_key);
+      const currentLabel = compact(record.threadLabel || record.thread_label);
+      const nextKey = next.key;
+      const nextLabel = next.label || currentLabel || nextKey;
+
+      if (currentKey === nextKey && currentLabel === nextLabel) {
+        return false;
+      }
+
+      this.db
+        .prepare(`UPDATE ${tableName} SET thread_key = ?, thread_label = ? WHERE ${idColumn} = ?`)
+        .run(nextKey, nextLabel, idValue);
+
+      return true;
+    };
+
+    const projectsById = new Map(
+      this.listProjects().map((project) => [project.projectId, project.name || project.projectId]),
+    );
+    const projectContext = (projectId) => ({
+      projectId,
+      projectName: projectsById.get(projectId) || projectId || 'default',
+    });
+
+    const commandRecords = this.db
+      .prepare(`SELECT * FROM commands ORDER BY datetime(created_at) ASC, command_id ASC`)
+      .all()
+      .map(mapCommandRow);
+    const briefRecords = this.db
+      .prepare(`SELECT * FROM task_briefs ORDER BY datetime(created_at) ASC, brief_id ASC`)
+      .all()
+      .map(mapTaskBriefRow);
+    const decisionRecords = this.db
+      .prepare(`SELECT * FROM decision_requests ORDER BY datetime(created_at) ASC, decision_id ASC`)
+      .all()
+      .map(mapDecisionRow);
+    const runRecords = this.db
+      .prepare(`SELECT * FROM runs ORDER BY datetime(created_at) ASC, run_id ASC`)
+      .all()
+      .map(mapRunRow);
+    const checkpointRecords = this.db
+      .prepare(`SELECT * FROM checkpoints ORDER BY datetime(created_at) ASC, checkpoint_id ASC`)
+      .all()
+      .map(mapCheckpointRow);
+    const receiptRecords = this.db
+      .prepare(`SELECT * FROM agent_receipts ORDER BY created_at ASC, receipt_id ASC`)
+      .all()
+      .map(mapReceiptRow);
+    const inboxRecords = this.db
+      .prepare(`SELECT * FROM inbox_items ORDER BY datetime(created_at) ASC, item_id ASC`)
+      .all()
+      .map(mapInboxRow);
+    const suggestionRecords = this.db
+      .prepare(`SELECT * FROM suggestions ORDER BY datetime(created_at) ASC, suggestion_id ASC`)
+      .all()
+      .map(mapSuggestionRow);
+
+    const commandsById = new Map(commandRecords.map((record) => [record.commandId, record]));
+    const briefsById = new Map(briefRecords.map((record) => [record.briefId, record]));
+    const decisionsById = new Map(decisionRecords.map((record) => [record.decisionId, record]));
+    const runsById = new Map(runRecords.map((record) => [record.runId, record]));
+    const checkpointsById = new Map(checkpointRecords.map((record) => [record.checkpointId, record]));
+
+    const commandIdentityCache = new Map();
+    const briefIdentityCache = new Map();
+    const decisionIdentityCache = new Map();
+    const runIdentityCache = new Map();
+    const checkpointIdentityCache = new Map();
+    const receiptIdentityCache = new Map();
+    const inboxIdentityCache = new Map();
+    const suggestionIdentityCache = new Map();
+
+    const resolveBriefIdentity = (briefId) => {
+      if (!briefId) {
+        return null;
+      }
+      if (briefIdentityCache.has(briefId)) {
+        return briefIdentityCache.get(briefId);
+      }
+
+      const brief = briefsById.get(briefId);
+      let identity = brief ? deriveThreadIdentity(brief, projectContext(brief.projectId)) : null;
+      if (brief) {
+        const sourceRef = compact(brief.sourceRef);
+        const commandId = refToId(sourceRef, 'command', 'CMD-');
+        const decisionId = refToId(sourceRef, 'decision', 'DR-');
+        const runId = refToId(sourceRef, 'run', 'RUN-');
+        const checkpointId = refToId(sourceRef, 'checkpoint', 'CP-');
+        identity = preferThreadIdentity(identity, resolveCommandIdentity(commandId));
+        identity = preferThreadIdentity(identity, resolveDecisionIdentity(decisionId));
+        identity = preferThreadIdentity(identity, resolveRunIdentity(runId));
+        identity = preferThreadIdentity(identity, resolveCheckpointIdentityById(checkpointId));
+      }
+      briefIdentityCache.set(briefId, identity);
+      return identity;
+    };
+
+    const resolveDecisionIdentity = (decisionId) => {
+      if (!decisionId) {
+        return null;
+      }
+      if (decisionIdentityCache.has(decisionId)) {
+        return decisionIdentityCache.get(decisionId);
+      }
+
+      const decision = decisionsById.get(decisionId);
+      const identity = decision ? deriveThreadIdentity(decision, projectContext(decision.projectId)) : null;
+      decisionIdentityCache.set(decisionId, identity);
+      return identity;
+    };
+
+    const resolveCommandIdentity = (commandId, seen = new Set()) => {
+      if (!commandId) {
+        return null;
+      }
+      if (commandIdentityCache.has(commandId)) {
+        return commandIdentityCache.get(commandId);
+      }
+      if (seen.has(commandId)) {
+        return null;
+      }
+
+      seen.add(commandId);
+      const command = commandsById.get(commandId);
+      if (!command) {
+        return null;
+      }
+
+      let identity = deriveThreadIdentity(command, projectContext(command.projectId));
+      if (command.parentCommandId) {
+        identity = preferThreadIdentity(identity, resolveCommandIdentity(command.parentCommandId, seen));
+      }
+
+      commandIdentityCache.set(commandId, identity);
+      return identity;
+    };
+
+    const resolveRunIdentity = (runId) => {
+      if (!runId) {
+        return null;
+      }
+      if (runIdentityCache.has(runId)) {
+        return runIdentityCache.get(runId);
+      }
+
+      const run = runsById.get(runId);
+      if (!run) {
+        return null;
+      }
+
+      let identity = deriveThreadIdentity(run, projectContext(run.projectId));
+      identity = preferThreadIdentity(identity, resolveCommandIdentity(run.commandId));
+      identity = preferThreadIdentity(identity, resolveBriefIdentity(run.briefId));
+      identity = preferThreadIdentity(identity, resolveDecisionIdentity(run.decisionId));
+
+      runIdentityCache.set(runId, identity);
+      return identity;
+    };
+
+    const resolveCheckpointIdentity = (checkpoint) => {
+      if (!checkpoint?.checkpointId) {
+        return null;
+      }
+      if (checkpointIdentityCache.has(checkpoint.checkpointId)) {
+        return checkpointIdentityCache.get(checkpoint.checkpointId);
+      }
+
+      let identity = deriveThreadIdentity(checkpoint, projectContext(checkpoint.projectId));
+      identity = preferThreadIdentity(identity, resolveRunIdentity(checkpoint.runId));
+      identity = preferThreadIdentity(identity, resolveCommandIdentity(checkpoint.commandId));
+      identity = preferThreadIdentity(identity, resolveBriefIdentity(checkpoint.briefId));
+      identity = preferThreadIdentity(identity, resolveDecisionIdentity(checkpoint.decisionId));
+
+      checkpointIdentityCache.set(checkpoint.checkpointId, identity);
+      return identity;
+    };
+
+    const resolveCheckpointIdentityById = (checkpointId) => {
+      if (!checkpointId) {
+        return null;
+      }
+      return resolveCheckpointIdentity(checkpointsById.get(checkpointId) || null);
+    };
+
+    const resolveReceiptIdentity = (receipt) => {
+      if (!receipt?.receiptId) {
+        return null;
+      }
+      if (receiptIdentityCache.has(receipt.receiptId)) {
+        return receiptIdentityCache.get(receipt.receiptId);
+      }
+
+      let identity = deriveThreadIdentity(receipt, projectContext(receipt.projectId));
+      identity = preferThreadIdentity(identity, resolveCommandIdentity(receipt.commandId));
+      receiptIdentityCache.set(receipt.receiptId, identity);
+      return identity;
+    };
+
+    const readPayloadId = (payload, snakeKey, camelKey, fallbackPrefix) =>
+      refToId(payload?.[snakeKey], '', fallbackPrefix) || refToId(payload?.[camelKey], '', fallbackPrefix);
+
+    const resolveInboxIdentity = (item) => {
+      if (!item?.itemId) {
+        return null;
+      }
+      if (inboxIdentityCache.has(item.itemId)) {
+        return inboxIdentityCache.get(item.itemId);
+      }
+
+      const payload = item.payload || {};
+      const commandId =
+        refToId(item.sourceRef, 'command', 'CMD-') || readPayloadId(payload, 'command_id', 'commandId', 'CMD-');
+      const briefId =
+        refToId(item.sourceRef, 'brief', 'TB-') || readPayloadId(payload, 'brief_id', 'briefId', 'TB-');
+      const decisionId =
+        refToId(item.sourceRef, 'decision', 'DR-') || readPayloadId(payload, 'decision_id', 'decisionId', 'DR-');
+      const runId = refToId(item.sourceRef, 'run', 'RUN-') || readPayloadId(payload, 'run_id', 'runId', 'RUN-');
+      const checkpointId =
+        refToId(item.sourceRef, 'checkpoint', 'CP-') ||
+        readPayloadId(payload, 'checkpoint_id', 'checkpointId', 'CP-');
+
+      let identity = deriveThreadIdentity(item, projectContext(item.projectId));
+      identity = preferThreadIdentity(identity, resolveCommandIdentity(commandId));
+      identity = preferThreadIdentity(identity, resolveBriefIdentity(briefId));
+      identity = preferThreadIdentity(identity, resolveDecisionIdentity(decisionId));
+      identity = preferThreadIdentity(identity, resolveRunIdentity(runId));
+      identity = preferThreadIdentity(identity, resolveCheckpointIdentityById(checkpointId));
+
+      inboxIdentityCache.set(item.itemId, identity);
+      return identity;
+    };
+
+    const resolveSuggestionIdentity = (suggestion) => {
+      if (!suggestion?.suggestionId) {
+        return null;
+      }
+      if (suggestionIdentityCache.has(suggestion.suggestionId)) {
+        return suggestionIdentityCache.get(suggestion.suggestionId);
+      }
+
+      const sourceRef = suggestion.sourceRef;
+      const sourceType = compact(suggestion.sourceType).toLowerCase();
+      const commandId =
+        refToId(sourceRef, 'command', 'CMD-') || (sourceType === 'command' ? refToId(sourceRef, '', 'CMD-') : null);
+      const briefId =
+        refToId(sourceRef, 'task_brief', 'TB-') ||
+        refToId(sourceRef, 'brief', 'TB-') ||
+        (sourceType === 'task_brief' || sourceType === 'brief' ? refToId(sourceRef, '', 'TB-') : null);
+      const decisionId =
+        refToId(sourceRef, 'decision', 'DR-') || (sourceType === 'decision' ? refToId(sourceRef, '', 'DR-') : null);
+      const runId = refToId(sourceRef, 'run', 'RUN-') || (sourceType === 'run' ? refToId(sourceRef, '', 'RUN-') : null);
+      const checkpointId =
+        refToId(sourceRef, 'checkpoint', 'CP-') ||
+        (sourceType === 'checkpoint' ? refToId(sourceRef, '', 'CP-') : null);
+
+      let identity = deriveThreadIdentity(suggestion, projectContext(suggestion.projectId));
+      identity = preferThreadIdentity(identity, resolveCommandIdentity(commandId));
+      identity = preferThreadIdentity(identity, resolveBriefIdentity(briefId));
+      identity = preferThreadIdentity(identity, resolveDecisionIdentity(decisionId));
+      identity = preferThreadIdentity(identity, resolveRunIdentity(runId));
+      identity = preferThreadIdentity(identity, resolveCheckpointIdentityById(checkpointId));
+
+      suggestionIdentityCache.set(suggestion.suggestionId, identity);
+      return identity;
+    };
+
+    for (const command of commandRecords) {
+      if (updateThreadIdentity('commands', 'command_id', command.commandId, command, resolveCommandIdentity(command.commandId))) {
+        stats.commands += 1;
+      }
+    }
+
+    for (const brief of briefRecords) {
+      if (updateThreadIdentity('task_briefs', 'brief_id', brief.briefId, brief, resolveBriefIdentity(brief.briefId))) {
+        stats.taskBriefs += 1;
+      }
+    }
+
+    for (const decision of decisionRecords) {
+      if (
+        updateThreadIdentity(
+          'decision_requests',
+          'decision_id',
+          decision.decisionId,
+          decision,
+          resolveDecisionIdentity(decision.decisionId),
+        )
+      ) {
+        stats.decisionRequests += 1;
+      }
+    }
+
+    for (const run of runRecords) {
+      if (updateThreadIdentity('runs', 'run_id', run.runId, run, resolveRunIdentity(run.runId))) {
+        stats.runs += 1;
+      }
+    }
+
+    for (const checkpoint of checkpointRecords) {
+      if (
+        updateThreadIdentity(
+          'checkpoints',
+          'checkpoint_id',
+          checkpoint.checkpointId,
+          checkpoint,
+          resolveCheckpointIdentity(checkpoint),
+        )
+      ) {
+        stats.checkpoints += 1;
+      }
+    }
+
+    for (const receipt of receiptRecords) {
+      if (
+        updateThreadIdentity(
+          'agent_receipts',
+          'receipt_id',
+          receipt.receiptId,
+          receipt,
+          resolveReceiptIdentity(receipt),
+        )
+      ) {
+        stats.receipts += 1;
+      }
+    }
+
+    for (const inboxItem of inboxRecords) {
+      if (updateThreadIdentity('inbox_items', 'item_id', inboxItem.itemId, inboxItem, resolveInboxIdentity(inboxItem))) {
+        stats.inboxItems += 1;
+      }
+    }
+
+    for (const suggestion of suggestionRecords) {
+      if (
+        updateThreadIdentity(
+          'suggestions',
+          'suggestion_id',
+          suggestion.suggestionId,
+          suggestion,
+          resolveSuggestionIdentity(suggestion),
+        )
+      ) {
+        stats.suggestions += 1;
+      }
+    }
+
+    stats.total =
+      stats.commands +
+      stats.taskBriefs +
+      stats.decisionRequests +
+      stats.runs +
+      stats.checkpoints +
+      stats.receipts +
+      stats.inboxItems +
+      stats.suggestions;
+
+    return stats;
+  }
+
+  getThreadIdentityBackfillStats() {
+    return {
+      ...(this.threadIdentityBackfillStats || {
+        commands: 0,
+        taskBriefs: 0,
+        decisionRequests: 0,
+        runs: 0,
+        checkpoints: 0,
+        receipts: 0,
+        inboxItems: 0,
+        suggestions: 0,
+        total: 0,
+      }),
+    };
   }
 
   nextId(prefix) {
@@ -940,23 +1491,46 @@ export class CortexStore {
     return mapCommandRow(row);
   }
 
+  getDecisionRequest(decisionId) {
+    const row = this.db.prepare('SELECT * FROM decision_requests WHERE decision_id = ?').get(decisionId);
+    return mapDecisionRow(row);
+  }
+
+  getTaskBrief(briefId) {
+    const row = this.db.prepare('SELECT * FROM task_briefs WHERE brief_id = ?').get(briefId);
+    return mapTaskBriefRow(row);
+  }
+
+  getRun(runId) {
+    const row = this.db.prepare('SELECT * FROM runs WHERE run_id = ?').get(runId);
+    return mapRunRow(row);
+  }
+
+  getCheckpoint(checkpointId) {
+    const row = this.db.prepare('SELECT * FROM checkpoints WHERE checkpoint_id = ?').get(checkpointId);
+    return mapCheckpointRow(row);
+  }
+
   createOrGetCommand(input) {
     const timestamp = nowIso(this.clock);
     const commandId = this.nextId('CMD');
+    const status = input.status || 'new';
     const result = this.db
       .prepare(`
         INSERT INTO commands (
-          command_id, parent_command_id, project_id, channel, target_type, target_id, parsed_action,
+          command_id, parent_command_id, project_id, thread_key, thread_label, channel, target_type, target_id, parsed_action,
           instruction, context_quote, anchor_block_id, channel_session_id,
           channel_message_id, operator_id, event_key, status, owner_agent, claimed_by, ack,
           result_summary, source, source_url, idempotency_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source, idempotency_key) DO NOTHING
       `)
       .run(
         commandId,
         input.parentCommandId || null,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.channel,
         input.targetType || null,
         input.targetId || null,
@@ -968,7 +1542,7 @@ export class CortexStore {
         input.channelMessageId || null,
         input.operatorId || null,
         input.eventKey || null,
-        'new',
+        status,
         input.ownerAgent || null,
         null,
         null,
@@ -1081,17 +1655,19 @@ export class CortexStore {
     const result = this.db
       .prepare(`
         INSERT INTO decision_requests (
-          decision_id, project_id, signal_level, blocking_level, status, question,
+          decision_id, project_id, thread_key, thread_label, signal_level, blocking_level, status, question,
           context, options_json, recommendation, recommended_option, why_now,
           impact_scope, irreversible, downstream_contamination, evidence_refs_json,
           requested_human_action, due_at, escalate_after, owner_agent,
           idempotency_key, source_url, display_tags, retrieval_tags, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, idempotency_key) DO NOTHING
       `)
       .run(
         decisionId,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.signalLevel,
         input.blockingLevel || null,
         input.status,
@@ -1207,15 +1783,17 @@ export class CortexStore {
     const result = this.db
       .prepare(`
         INSERT INTO task_briefs (
-          brief_id, project_id, title, why, context, what_text, status,
-          owner_agent, source, source_url, channel_session_id, target_type,
+          brief_id, project_id, thread_key, thread_label, title, why, context, what_text, status,
+          owner_agent, source, source_ref, source_url, channel_session_id, target_type,
           target_id, idempotency_key, display_tags, retrieval_tags, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, idempotency_key) DO NOTHING
       `)
       .run(
         briefId,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.title,
         input.why,
         input.context,
@@ -1223,6 +1801,7 @@ export class CortexStore {
         input.status,
         input.ownerAgent || null,
         input.source || null,
+        input.sourceRef || null,
         input.sourceUrl || null,
         input.channelSessionId || null,
         input.targetType || null,
@@ -1244,6 +1823,67 @@ export class CortexStore {
     return {
       brief: mapTaskBriefRow(row),
       deduped: result.changes === 0,
+    };
+  }
+
+  updateTaskBriefStatus({
+    briefId,
+    status,
+    allowMissing = false,
+  }) {
+    const existing = this.db.prepare('SELECT * FROM task_briefs WHERE brief_id = ?').get(briefId);
+    if (!existing) {
+      if (allowMissing) {
+        return null;
+      }
+      throw new Error(`Unknown task brief ${briefId}`);
+    }
+
+    const nextStatus = status || existing.status;
+
+    this.db
+      .prepare(`
+        UPDATE task_briefs
+        SET status = ?, updated_at = ?
+        WHERE brief_id = ?
+      `)
+      .run(nextStatus, nowIso(this.clock), briefId);
+
+    return mapTaskBriefRow(this.db.prepare('SELECT * FROM task_briefs WHERE brief_id = ?').get(briefId));
+  }
+
+  updateTaskBriefSource(input) {
+    const { briefId, allowMissing = false } = input;
+    const existing = this.db.prepare('SELECT * FROM task_briefs WHERE brief_id = ?').get(briefId);
+    if (!existing) {
+      if (allowMissing) {
+        return null;
+      }
+      throw new Error(`Unknown task brief ${briefId}`);
+    }
+
+    const hasSourceRef = Object.prototype.hasOwnProperty.call(input, 'sourceRef');
+    const hasSourceUrl = Object.prototype.hasOwnProperty.call(input, 'sourceUrl');
+    if (!hasSourceRef && !hasSourceUrl) {
+      throw new Error('Task brief source update requires sourceRef or sourceUrl');
+    }
+
+    const nextSourceRef = hasSourceRef ? input.sourceRef ?? null : existing.source_ref;
+    const nextSourceUrl = hasSourceUrl ? input.sourceUrl ?? null : existing.source_url;
+
+    this.db
+      .prepare(`
+        UPDATE task_briefs
+        SET source_ref = ?, source_url = ?, updated_at = ?
+        WHERE brief_id = ?
+      `)
+      .run(nextSourceRef, nextSourceUrl, nowIso(this.clock), briefId);
+
+    this.threadIdentityBackfillStats = this.backfillThreadIdentityColumns();
+
+    return {
+      brief: mapTaskBriefRow(this.db.prepare('SELECT * FROM task_briefs WHERE brief_id = ?').get(briefId)),
+      threadIdentityBackfillStats: this.getThreadIdentityBackfillStats(),
     };
   }
 
@@ -1283,15 +1923,17 @@ export class CortexStore {
     const result = this.db
       .prepare(`
         INSERT INTO runs (
-          run_id, project_id, brief_id, command_id, decision_id, agent_name, role, phase, status,
+          run_id, project_id, thread_key, thread_label, brief_id, command_id, decision_id, agent_name, role, phase, status,
           title, summary, quality_grade, anomaly_level, feedback_source, idempotency_key,
           started_at, completed_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, idempotency_key) DO NOTHING
       `)
       .run(
         runId,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.briefId || null,
         input.commandId || null,
         input.decisionId || null,
@@ -1405,15 +2047,17 @@ export class CortexStore {
     const result = this.db
       .prepare(`
         INSERT INTO checkpoints (
-          checkpoint_id, project_id, run_id, brief_id, command_id, decision_id, signal_level,
+          checkpoint_id, project_id, thread_key, thread_label, run_id, brief_id, command_id, decision_id, signal_level,
           stage, status, title, summary, evidence_json, next_step, quality_grade, anomaly_level,
           feedback_source, created_by, idempotency_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, idempotency_key) DO NOTHING
       `)
       .run(
         checkpointId,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.runId || null,
         input.briefId || null,
         input.commandId || null,
@@ -1487,16 +2131,18 @@ export class CortexStore {
     const result = this.db
       .prepare(`
         INSERT INTO agent_receipts (
-          receipt_id, command_id, project_id, session_id, status,
+          receipt_id, command_id, project_id, thread_key, thread_label, session_id, status,
           receipt_type, payload_json, signal, channel, target,
           idempotency_key, parent_receipt_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(idempotency_key) DO NOTHING
       `)
       .run(
         receiptId,
         input.commandId,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.sessionId || null,
         input.status,
         input.receiptType,
@@ -1958,15 +2604,17 @@ export class CortexStore {
     const result = this.db
       .prepare(`
         INSERT INTO inbox_items (
-          item_id, project_id, queue, object_type, action_type, risk_level,
+          item_id, project_id, thread_key, thread_label, queue, object_type, action_type, risk_level,
           status, title, summary, owner_agent, source_ref, source_url,
           assigned_to, payload_json, idempotency_key, created_at, updated_at, resolved_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, idempotency_key) DO NOTHING
       `)
       .run(
         itemId,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.queue,
         input.objectType,
         input.actionType,
@@ -2105,16 +2753,18 @@ export class CortexStore {
     const result = this.db
       .prepare(`
         INSERT INTO suggestions (
-          suggestion_id, project_id, source_type, source_ref, document_ref,
+          suggestion_id, project_id, thread_key, thread_label, source_type, source_ref, document_ref,
           anchor_block_id, selected_text, proposed_text, reason, impact_scope,
           status, owner_agent, applied_at, rejected_reason, idempotency_key,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, idempotency_key) DO NOTHING
       `)
       .run(
         suggestionId,
         input.projectId,
+        input.threadKey || null,
+        input.threadLabel || null,
         input.sourceType,
         input.sourceRef || null,
         input.documentRef || null,

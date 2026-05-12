@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildLaunchdPlist, defaultLaunchAgentPath, defaultLaunchdLabel } from '../src/launchd.js';
+import {
+  buildLaunchdPlist,
+  defaultLaunchAgentPath,
+  defaultLaunchdLabel,
+  defaultServerDirectLaunchAgentPath,
+  defaultServerDirectLaunchdLabel,
+} from '../src/launchd.js';
 
 test('defaultLaunchdLabel derives a stable service label from cwd', () => {
   assert.equal(defaultLaunchdLabel('/Users/example/Desktop/cortex-workflow-p0'), 'com.cortex.cortex-workflow-p0');
@@ -14,6 +20,16 @@ test('defaultLaunchAgentPath points to LaunchAgents plist', () => {
   });
 
   assert.equal(filePath, '/Users/example/Library/LaunchAgents/com.cortex.cortex-workflow-p0.plist');
+});
+
+test('defaultServerDirectLaunchAgentPath points to the dedicated server-direct plist', () => {
+  assert.equal(defaultServerDirectLaunchdLabel(), 'com.yusijua.cortex.server-direct');
+  assert.equal(
+    defaultServerDirectLaunchAgentPath({
+      home: '/Users/example',
+    }),
+    '/Users/example/Library/LaunchAgents/com.yusijua.cortex.server-direct.plist',
+  );
 });
 
 test('buildLaunchdPlist schedules automation ensure with project env support', () => {

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 function normalizeProjectId(projectId) {
   const value = String(projectId || '').trim();
@@ -104,6 +104,9 @@ export function ensureProjectWorkspace({ cwd = process.cwd(), projectId, project
   if (!isLegacyProjectWorkspace(paths.projectId)) {
     mkdirSync(paths.workspaceDir, { recursive: true });
   }
+
+  mkdirSync(dirname(paths.executionDocPath), { recursive: true });
+  mkdirSync(dirname(paths.memoryPath), { recursive: true });
 
   if (!existsSync(paths.executionDocPath)) {
     writeFileSync(

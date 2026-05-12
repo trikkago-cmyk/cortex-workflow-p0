@@ -45,6 +45,15 @@ export function defaultLaunchAgentPath({ cwd = process.cwd(), home = homedir(), 
   return resolve(home, 'Library', 'LaunchAgents', `${resolvedLabel}.plist`);
 }
 
+export function defaultServerDirectLaunchdLabel() {
+  return 'com.yusijua.cortex.server-direct';
+}
+
+export function defaultServerDirectLaunchAgentPath({ home = homedir(), label } = {}) {
+  const resolvedLabel = label || defaultServerDirectLaunchdLabel();
+  return resolve(home, 'Library', 'LaunchAgents', `${resolvedLabel}.plist`);
+}
+
 export function launchctlDomain(uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) {
     throw new Error('launchctl domain requires a valid user id');
